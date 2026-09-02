@@ -33,8 +33,18 @@ export const MODELS = [
   { id: "claude-haiku-4-5", label: "Claude Haiku 4.5 (cheapest)" },
 ];
 
+/** Provider to use when none was chosen in Settings: PROVIDER env, else whichever key the environment has. */
+function defaultProvider() {
+  const env = (process.env.PROVIDER || "").toLowerCase();
+  if (env === "xai" || env === "anthropic") return env;
+  const hasAnthropic = !!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN);
+  const hasXai = !!process.env.XAI_API_KEY;
+  if (hasXai && !hasAnthropic) return "xai";
+  return "anthropic";
+}
+
 export function settings() {
-  const s = { ...DEFAULTS };
+  const s = { ...DEFAULTS, provider: defaultProvider() };
   for (const k of Object.keys(DEFAULTS)) {
     const v = getSetting(k);
     if (v !== null && v !== undefined && v !== "") s[k] = v;

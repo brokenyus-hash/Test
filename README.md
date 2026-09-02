@@ -99,7 +99,7 @@ or `docker compose up` (reads keys from `.env`).
 
 **Protect it.** Set `APP_PASSWORD` (and optionally `APP_USER`, default `tavern`) whenever the app is reachable from the internet. The browser will ask for the password once; without it anyone with the URL could spend your API credits and read your stories.
 
-**Environment variables:** `PORT`, `DATA_DIR`, `ANTHROPIC_API_KEY`, `XAI_API_KEY`, `XAI_BASE_URL`, `APP_PASSWORD`, `APP_USER`, `ANTHROPIC_BASE_URL`.
+**Environment variables:** `PORT`, `DATA_DIR`, `ANTHROPIC_API_KEY`, `XAI_API_KEY`, `XAI_BASE_URL`, `PROVIDER` (`anthropic` or `xai`; defaults to whichever key is set), `APP_PASSWORD`, `APP_USER`, `ANTHROPIC_BASE_URL`.
 
 ## Layout
 
