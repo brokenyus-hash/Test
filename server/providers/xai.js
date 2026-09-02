@@ -45,11 +45,11 @@ export function toOpenAIMessages(system, messages) {
   return out;
 }
 
+// xAI only knows "low" and "high"; omitting the field means the model's default, which is
+// heavy reasoning (60-120 s per reply on grok-4.6). So low/medium -> low, high+ -> high.
 function effortParam(model, effort) {
-  if (!effort || /non-reasoning/.test(model)) return {};
-  if (effort === "low") return { reasoning_effort: "low" };
-  if (effort === "medium") return {};
-  return { reasoning_effort: "high" };
+  if (/non-reasoning/.test(model)) return {};
+  return { reasoning_effort: ["high", "xhigh", "max"].includes(effort) ? "high" : "low" };
 }
 
 const usageOf = (u) => u ? {

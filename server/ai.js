@@ -21,8 +21,8 @@ export function loadChatContext(chatId) {
 }
 
 // Provider-aware helpers: utility calls use the utility model unless a model is given.
-// Creative generation effort: Grok's "high" roughly triples latency (~50 s vs ~20 s per card), so keep it medium there.
-const genEffort = () => (settings().provider === "xai" ? "medium" : "high");
+// Creative generation effort: Grok's "high" reasoning takes minutes per card, so use low reasoning there.
+const genEffort = () => (settings().provider === "xai" ? "low" : "high");
 const structured = (p) => { const s = settings(); return providerStructured({ provider: s.provider, model: s.activeUtilityModel, effort: s.utilityEffort, maxTokens: 8000, ...p }); };
 const complete = (p) => { const s = settings(); return providerComplete({ provider: s.provider, model: s.activeUtilityModel, effort: s.utilityEffort, maxTokens: 4000, ...p }); };
 

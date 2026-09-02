@@ -195,10 +195,14 @@ class ChatView {
     for (const b of this.main.querySelectorAll(".toolbar .btn")) b.disabled = on;
   }
   status(text) {
+    clearInterval(this._statusTimer);
     if (!text) { this.statusEl.style.display = "none"; return; }
     this.statusEl.style.display = "";
     this.statusEl.innerHTML = "";
-    this.statusEl.append(h("span", { class: "spinner" }), text);
+    const clock = h("span", { class: "muted" });
+    this.statusEl.append(h("span", { class: "spinner" }), text, clock);
+    const t0 = Date.now();
+    this._statusTimer = setInterval(() => { clock.textContent = ` ${Math.round((Date.now() - t0) / 1000)}s`; }, 1000);
   }
   scrollToBottom(force = false) {
     const nearBottom = this.scroll.scrollHeight - this.scroll.scrollTop - this.scroll.clientHeight < 160;

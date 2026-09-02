@@ -237,6 +237,8 @@ test("xAI (Grok) provider: streaming, reasoning, structured state, live model li
   const replyReq = reqs.find((r) => r.body.stream);
   assert.equal(replyReq.headers.authorization, "Bearer xai-test-key");
   assert.equal(replyReq.body.reasoning_effort, "low");
+  const genReq = mock.requests.filter((r) => r.url.startsWith("/v1/chat/completions")).at(-1);
+  assert.ok(genReq);
   assert.equal(replyReq.body.messages[0].role, "system");
   assert.match(replyReq.body.messages[0].content, /You are Mira/);
   assert.equal(replyReq.body.messages.at(-1).role, "system", "dynamic context as trailing system message");

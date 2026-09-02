@@ -1,6 +1,6 @@
 {
   "name": "tavern-ai-roleplay",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "A full-featured AI roleplay studio: characters, personas, lorebooks, living world state, memory and context management, powered by Claude.",
   "type": "module",
   "main": "server/index.js",

@@ -4,6 +4,9 @@ import { fileURLToPath } from "node:url";
 import { api } from "./routes/api.js";
 import { aiRoutes } from "./routes/ai.js";
 import { describeError } from "./claude.js";
+import { createRequire } from "node:module";
+
+const APP_VERSION = createRequire(import.meta.url)("../package.json").version;
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const app = express();
@@ -11,7 +14,7 @@ app.disable("x-powered-by");
 app.use(express.json({ limit: "20mb" }));
 
 // Unauthenticated health check for load balancers / Kubernetes probes.
-app.get("/healthz", (req, res) => res.json({ ok: true }));
+app.get("/healthz", (req, res) => res.json({ ok: true, version: APP_VERSION }));
 
 // Optional protection for internet-facing deployments: set APP_PASSWORD (and optionally APP_USER).
 if (process.env.APP_PASSWORD) {
