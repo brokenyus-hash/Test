@@ -67,17 +67,21 @@ spec:
                 - |
                   set -e
                   REPO=$(echo "$REPO_URL" | sed -E 's#https://github.com/##; s#\.git$##')
-                  AUTH=""; [ -n "$GITHUB_TOKEN" ] && AUTH="-H \"Authorization: Bearer $GITHUB_TOKEN\""
-                  LATEST=$(eval curl -fsS $AUTH -H "Accept: application/vnd.github.sha" "https://api.github.com/repos/$REPO/commits/$REPO_BRANCH")
-                  [ -n "$LATEST" ] || { echo "could not read branch head"; exit 1; }
+                  # Optional GitHub auth goes through a header file so no quoting passes through eval.
+                  GH_HDR=/tmp/gh-headers; : > "$GH_HDR"
+                  [ -n "$GITHUB_TOKEN" ] && echo "Authorization: Bearer $GITHUB_TOKEN" >> "$GH_HDR"
+                  LATEST=$(curl -fsS -H "@$GH_HDR" -H "Accept: application/vnd.github.sha" \
+                    "https://api.github.com/repos/$REPO/commits/$REPO_BRANCH" | tr -d '[:space:]')
+                  echo "$LATEST" | grep -Eq '^[0-9a-f]{40}$' || { echo "could not read branch head (got: $(echo "$LATEST" | head -c 120))"; exit 1; }
                   API="https://kubernetes.default.svc"
                   SA=/var/run/secrets/kubernetes.io/serviceaccount
-                  K="curl -fsS --cacert $SA/ca.crt -H \"Authorization: Bearer $(cat $SA/token)\""
-                  CURRENT=$(eval $K "$API/apis/apps/v1/namespaces/tavern/deployments/tavern" | sed -n 's/.*"tavern\/commit":"\([0-9a-f]*\)".*/\1/p' | head -1)
+                  DEPLOY="$API/apis/apps/v1/namespaces/tavern/deployments/tavern"
+                  kube() { curl -fsS --cacert "$SA/ca.crt" -H "Authorization: Bearer $(cat "$SA/token")" "$@"; }
+                  CURRENT=$(kube "$DEPLOY" | tr -d '\n' | sed -n 's/.*"tavern\/commit": *"\([0-9a-f]*\)".*/\1/p')
                   echo "latest=$LATEST current=${CURRENT:-none}"
                   if [ "$LATEST" != "$CURRENT" ]; then
                     echo "new commit -> rolling out"
-                    eval $K -X PATCH -H '"Content-Type: application/strategic-merge-patch+json"' \
-                      -d "'{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"tavern/commit\":\"$LATEST\"}}}}}'" \
-                      "$API/apis/apps/v1/namespaces/tavern/deployments/tavern" > /dev/null
+                    kube -X PATCH -H "Content-Type: application/strategic-merge-patch+json" \
+                      -d "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"tavern/commit\":\"$LATEST\"}}}}}" \
+                      "$DEPLOY" > /dev/null
                   fi
