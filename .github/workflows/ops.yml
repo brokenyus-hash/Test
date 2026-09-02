@@ -1,0 +1,65 @@
+# Cluster operations via a self-hosted runner on the server (see README "Let Claude operate the cluster").
+# Triggered by hand (or by Claude through the GitHub API); also deploys on every push to the app branch.
+name: ops
+on:
+  push:
+    branches: [claude/ai-roleplay-app-characters-w0a4bb]
+    paths-ignore: [".github/**", "README.md"]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: What to do
+        type: choice
+        default: status
+        options: [status, logs, deploy, restart, events, describe, kubectl]
+      arg:
+        description: "logs: tail lines (default 200) · kubectl: arguments after 'kubectl -n tavern'"
+        required: false
+        default: ""
+concurrency: { group: tavern-ops, cancel-in-progress: false }
+jobs:
+  ops:
+    runs-on: [self-hosted, tavern]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pick kubectl
+        run: |
+          if command -v kubectl >/dev/null; then echo "K=kubectl" >> $GITHUB_ENV
+          elif command -v k3s >/dev/null; then echo "K=k3s kubectl" >> $GITHUB_ENV
+          elif command -v microk8s >/dev/null; then echo "K=microk8s kubectl" >> $GITHUB_ENV
+          else echo "no kubectl on this runner" >&2; exit 1; fi
+      - name: Run
+        env:
+          ACTION: ${{ github.event_name == 'push' && 'deploy' || inputs.action }}
+          ARG: ${{ inputs.arg }}
+        run: |
+          set -eo pipefail
+          echo "== action: $ACTION  arg: $ARG"
+          case "$ACTION" in
+            deploy)
+              $K apply -f deploy/k8s/tavern.yaml
+              $K apply -f deploy/k8s/autodeploy.yaml
+              SHA=$(git rev-parse HEAD)
+              $K -n tavern patch deployment tavern -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"tavern/commit\":\"$SHA\"}}}}}"
+              $K -n tavern rollout status deployment/tavern --timeout=600s
+              $K -n tavern get pods -o wide ;;
+            status)
+              $K get nodes -o wide
+              $K -n tavern get all,ingress,cronjob 2>/dev/null || $K -n tavern get all
+              echo "== app commit: $($K -n tavern get deploy tavern -o jsonpath='{.spec.template.metadata.annotations.tavern/commit}')"
+              echo "== health:"; $K -n tavern exec deploy/tavern -- wget -qO- http://127.0.0.1:3000/healthz || true ;;
+            logs)
+              echo "== fetch (clone/install):"; $K -n tavern logs deploy/tavern -c fetch --tail=60 || true
+              echo "== app:"; $K -n tavern logs deploy/tavern --tail="${ARG:-200}" --timestamps ;;
+            restart)
+              $K -n tavern rollout restart deployment/tavern
+              $K -n tavern rollout status deployment/tavern --timeout=600s ;;
+            events)
+              $K -n tavern get events --sort-by=.lastTimestamp | tail -60 ;;
+            describe)
+              $K -n tavern describe deployment/tavern; $K -n tavern describe pods -l app=tavern | tail -80 ;;
+            kubectl)
+              [ -n "$ARG" ] || { echo "arg required"; exit 1; }
+              eval "$K -n tavern $ARG" ;;
+          esac

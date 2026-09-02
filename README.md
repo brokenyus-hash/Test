@@ -94,6 +94,18 @@ curl -fsSL https://raw.githubusercontent.com/brokenyus-hash/Test/claude/ai-rolep
 
 It finds `kubectl` (plain, `k3s kubectl` or `microk8s kubectl`), applies `deploy/k8s/tavern.yaml`, stores the keys in a Secret, and exposes the app through the cluster's Ingress at `http://tavern.<server-ip>.nip.io` (or on NodePort `30080` if there is no ingress controller). It also installs `deploy/k8s/autodeploy.yaml`: a CronJob that checks the branch on GitHub every two minutes and rolls out any new commit, so **pushing to the branch is deploying**. See `deploy/` for the manifests.
 
+**Let Claude (or CI) operate the cluster.** `.github/workflows/ops.yml` runs on a self-hosted GitHub Actions runner installed on the server and exposes `status`, `logs`, `deploy`, `restart`, `events`, `describe` and raw `kubectl` actions; it also deploys on every push. Install the runner once on the server (GitHub → repo *Settings → Actions → Runners → New self-hosted runner* shows a registration token):
+
+```bash
+mkdir -p /opt/actions-runner && cd /opt/actions-runner
+curl -o runner.tar.gz -L https://github.com/actions/runner/releases/download/v2.328.0/actions-runner-linux-x64-2.328.0.tar.gz
+tar xzf runner.tar.gz
+RUNNER_ALLOW_RUNASROOT=1 ./config.sh --url https://github.com/brokenyus-hash/Test --token <REGISTRATION_TOKEN> --labels tavern --unattended --name hetzner
+RUNNER_ALLOW_RUNASROOT=1 ./svc.sh install root && ./svc.sh start
+```
+
+Anyone with write access to the repo can then trigger the workflow from the Actions tab, and a Claude session can trigger it and read the logs through the GitHub API.
+
 **Railway / Fly.io / any Docker host:**
 
 ```bash
