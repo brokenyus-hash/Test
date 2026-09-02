@@ -5,6 +5,8 @@ import { settings } from "../claude.js";
 import { hasCredentials, describeError } from "../provider.js";
 import { requireUser } from "../auth.js";
 import * as ai from "../ai.js";
+import { NARRATOR } from "../prompt.js";
+import { parseCommand, splitName, COMMANDS } from "../commands.js";
 
 export const aiRoutes = Router();
 aiRoutes.use(requireUser);
@@ -38,11 +40,15 @@ const abortOnClose = (req, res) => {
 };
 
 // POST /api/ai/chats/:id/reply  { text?, mode?: reply|regen|continue, target_message_id?, instruction?, kind?, speaker? }
+// A text starting with "/" is a typed command (see ../commands.js) and is handled by runCommand.
 aiRoutes.post("/chats/:id/reply", wrap(async (req, res) => {
   if (needKey(req, res)) return;
   const chat = db.chats.get(req.params.id, req.user.id);
   if (!chat) return res.status(404).json({ error: "Roleplay not found" });
-  const { text, mode = "reply", target_message_id = null, instruction = null, kind, speaker = null } = req.body || {};
+  let { text, mode = "reply", target_message_id = null, instruction = null, kind, speaker = null } = req.body || {};
+  const cmd = mode === "reply" ? parseCommand(text) : null;
+  if (cmd?.cmd === "ooc") text = `(OOC: ${cmd.arg})`;
+  else if (cmd) return runCommand(req, res, chat, cmd);
   let userMessage = null;
   if (mode === "reply" && text && text.trim()) userMessage = db.messages.add(chat.id, { role: "user", text: text.trim(), kind });
   const { emit, end } = sse(res);
@@ -52,6 +58,19 @@ aiRoutes.post("/chats/:id/reply", wrap(async (req, res) => {
   finally { end(); }
 }));
 
+/** Save a stage direction as a bracketed user line, then run the turn with it as a hard instruction. */
+async function runDirection(req, res, chat, { direction, speaker = null, before = null }) {
+  const m = db.messages.add(chat.id, { role: "user", text: direction, kind: "direction" });
+  const { emit, end } = sse(res);
+  before?.(emit);
+  emit("user_message", { message: m });
+  const instruction = `Stage direction from the user for this reply. Make it happen now, in the story's tone; do not skip, delay, or refuse it: ${direction}`;
+  try { await ai.runTurn({ chatId: chat.id, user: req.user, emit, signal: abortOnClose(req, res), instruction, speakerName: speaker }); }
+  catch (e) { emit("error", { error: describeError(e) }); }
+  finally { end(); }
+}
+const narrated = (kind) => (kind === "narrate" || kind === "time" || kind === "scene" ? "Narrator" : null);
+
 // Narrator tools: time skip / twist / scene change / narration
 aiRoutes.post("/chats/:id/direct", wrap(async (req, res) => {
   if (needKey(req, res)) return;
@@ -60,14 +79,74 @@ aiRoutes.post("/chats/:id/direct", wrap(async (req, res) => {
   const { kind, detail } = req.body || {};
   const direction = ai.narratorDirection(kind, detail);
   if (!direction) return res.status(400).json({ error: "kind required" });
-  const m = db.messages.add(chat.id, { role: "user", text: direction, kind: "direction" });
-  const { emit, end } = sse(res);
-  emit("user_message", { message: m });
-  const instruction = `Stage direction from the user for this reply. Make it happen now, in the story's tone; do not skip, delay, or refuse it: ${direction}`;
-  try { await ai.runTurn({ chatId: chat.id, user: req.user, emit, signal: abortOnClose(req, res), instruction, speakerName: kind === "narrate" || kind === "time" || kind === "scene" ? "Narrator" : null }); }
-  catch (e) { emit("error", { error: describeError(e) }); }
-  finally { end(); }
+  return runDirection(req, res, chat, { direction, speaker: narrated(kind) });
 }));
+
+aiRoutes.get("/commands", (req, res) => res.json({ commands: COMMANDS }));
+
+// Typed commands from the composer. Exact name first, then prefix ("Jess" -> "Jessica Hale").
+const findCast = (cast, name) => {
+  const n = (name || "").trim().toLowerCase();
+  return n ? cast.find((m) => m.name.toLowerCase() === n) || cast.find((m) => m.name.toLowerCase().startsWith(n)) : null;
+};
+async function runCommand(req, res, chat, { cmd, name, arg }) {
+  const bad = (error) => res.status(400).json({ error, commands: COMMANDS });
+  const userId = req.user.id;
+  const cast = ai.stripCast(ai.resolveCast(chat, userId));
+  const castEvent = (emit, newcomer = null) => emit("cast", { cast: ai.stripCast(ai.resolveCast(db.chats.get(chat.id, userId), userId)), newcomer });
+  const plain = async (fn) => { const { emit, end } = sse(res); try { await fn(emit); } catch (e) { emit("error", { error: describeError(e) }); } finally { end(); } };
+  switch (cmd) {
+    case "help": return bad("Type a command, e.g. /force She kisses you. Commands: " + COMMANDS.map((c) => c.usage.split(" ")[0]).join(" "));
+    case "unknown": return bad(`Unknown command /${name}. Type /help for the list.`);
+    case "force": case "narrate": case "time": case "scene": case "twist": {
+      const kind = cmd === "twist" ? "event" : cmd;
+      if (!arg && kind !== "event") return bad(`Usage: /${cmd} <what happens>`);
+      return runDirection(req, res, chat, { direction: ai.narratorDirection(kind, arg), speaker: narrated(kind) });
+    }
+    case "steer":
+      if (!arg) return bad("Usage: /steer <instruction for the next reply>");
+      return plain((emit) => ai.runTurn({ chatId: chat.id, user: req.user, emit, signal: abortOnClose(req, res), instruction: arg }));
+    case "enter": {
+      const { name: who, rest } = splitName(arg);
+      if (!who) return bad("Usage: /enter <Name>: <who they are>");
+      let m = findCast(cast, who), newcomer = null;
+      if (m) m.status = "present";
+      else {
+        const known = db.characters.list(userId).find((c) => c.name.toLowerCase() === who.toLowerCase());
+        m = known ? { character_id: known.id, name: known.name, status: "present", role: "supporting" }
+          : { character_id: null, name: who, status: "present", role: "guest", generated: true, brief: rest, avatar: "✨", color: "#f59e0b" };
+        cast.push(m); newcomer = m;
+      }
+      db.chats.update(chat.id, { cast, narrator_enabled: true }, { touch: false, userId });
+      const direction = `Narrator: ${m.name} enters the scene right now${rest ? ` (${rest})` : ""}. Introduce them and let them act.`;
+      return runDirection(req, res, chat, { direction, speaker: "Narrator", before: (emit) => castEvent(emit, newcomer) });
+    }
+    case "leave": {
+      const m = findCast(cast, arg);
+      if (!m) return bad(arg ? `Nobody called "${arg}" is in the cast.` : "Usage: /leave <Name>");
+      m.status = "gone";
+      db.chats.update(chat.id, { cast }, { touch: false, userId });
+      return runDirection(req, res, chat, { direction: `Narrator: ${m.name} leaves the scene now and is gone from the story.`, speaker: "Narrator", before: castEvent });
+    }
+    case "say": {
+      const { name: who, rest } = splitName(arg);
+      if (!who || !rest) return bad("Usage: /say <Name>: <their line>   (or /say Narrator: <text>)");
+      const isN = who.toLowerCase() === "narrator";
+      const m = isN ? null : findCast(cast, who);
+      if (!isN && !m) return bad(`Nobody called "${who}" is in the cast. Use /enter ${who} first.`);
+      const full = isN ? NARRATOR : ai.resolveCast(chat, userId).find((x) => x.name === m.name);
+      const speaker = { name: full.name, kind: full.kind, character_id: full.character_id || null, avatar: full.avatar, color: full.color };
+      const saved = db.messages.add(chat.id, { role: "assistant", text: rest, speaker });
+      return plain((emit) => { emit("speaker", speaker); emit("done", { message: saved }); });
+    }
+    case "note": {
+      const note = /^(off|clear|none|-)?$/i.test(arg) ? "" : arg;
+      db.chats.update(chat.id, { director_note: note }, { touch: false, userId });
+      return plain((emit) => emit("note", { director_note: note }));
+    }
+    default: return bad("Unknown command. Type /help for the list.");
+  }
+}
 
 /** Long-running jobs answer over SSE too (status/result/error) so proxies never cut them. */
 const job = (fn) => wrap(async (req, res) => {

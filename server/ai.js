@@ -371,6 +371,7 @@ export function narratorDirection(kind, detail) {
     case "event": return `Narrator: introduce an unexpected event or complication that fits the story and world${detail ? ": " + detail : ""}. Let it land on the characters naturally.`;
     case "scene": return `Scene change: ${detail || "cut to a new scene"}.`;
     case "narrate": return `Narrator: ${detail}`;
+    case "force": return `Direction: ${detail}. This happens now, exactly as stated.`;
     default: return detail || "";
   }
 }

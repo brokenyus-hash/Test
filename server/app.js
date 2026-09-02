@@ -1,4 +1,5 @@
 import express from "express";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { api } from "./routes/api.js";
@@ -10,12 +11,27 @@ import { createRequire } from "node:module";
 const APP_VERSION = createRequire(import.meta.url)("../package.json").version;
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+
+/** Short git commit of the running code (from TAVERN_COMMIT or the checkout's .git), or null. */
+function readCommit() {
+  if (process.env.TAVERN_COMMIT) return process.env.TAVERN_COMMIT.slice(0, 7);
+  try {
+    const git = path.join(here, "..", ".git");
+    const head = fs.readFileSync(path.join(git, "HEAD"), "utf8").trim();
+    if (!head.startsWith("ref: ")) return head.slice(0, 7);
+    const ref = head.slice(5);
+    try { return fs.readFileSync(path.join(git, ref), "utf8").trim().slice(0, 7); }
+    catch { return fs.readFileSync(path.join(git, "packed-refs"), "utf8").split("\n").find((l) => l.endsWith(" " + ref))?.split(" ")[0].slice(0, 7) || null; }
+  } catch { return null; }
+}
+const APP_COMMIT = readCommit();
+
 export const app = express();
 app.disable("x-powered-by");
 app.use(express.json({ limit: "20mb" }));
 
-// Unauthenticated health check for load balancers / Kubernetes probes.
-app.get("/healthz", (req, res) => res.json({ ok: true, version: APP_VERSION }));
+// Unauthenticated health check for load balancers / Kubernetes probes; also shows what is deployed.
+app.get("/healthz", (req, res) => res.json({ ok: true, version: APP_VERSION, commit: APP_COMMIT }));
 
 // Optional protection for internet-facing deployments: set APP_PASSWORD (and optionally APP_USER).
 if (process.env.APP_PASSWORD) {

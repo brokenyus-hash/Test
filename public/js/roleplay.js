@@ -206,7 +206,7 @@ class RoleplayView {
     });
     this.sendBtn = h("button", { class: "btn rbtn send", title: "Send", onClick: () => (this.busy ? this.stop() : this.send()) }, "➤");
     const plus = h("button", { class: "btn rbtn", title: "Actions", onClick: (e) => this.actionsMenu(e.currentTarget) }, "＋");
-    this.ctxBar = h("div", { class: "hint" }, h("span", { class: "keys" }, "Enter to send · Shift+Enter for a new line"), h("span", { class: "ctx-bar" }));
+    this.ctxBar = h("div", { class: "hint" }, h("span", { class: "keys" }, "Enter to send · Shift+Enter for a new line · ", h("a", { href: "#", onClick: (e) => { e.preventDefault(); this.showCommands(); } }, "/help for commands")), h("span", { class: "ctx-bar" }));
     return h("div", { class: "composer" }, h("div", { class: "composer-inner" }, h("div", { class: "box" }, plus, this.ta, this.sendBtn), this.ctxBar));
   }
   actionsMenu(anchor) {
@@ -223,7 +223,18 @@ class RoleplayView {
       { icon: "🎬", label: "Change scene", disabled: dis, onClick: () => this.direct("scene") },
       { icon: "📣", label: "Tell the narrator something", disabled: dis, onClick: () => this.direct("narrate") },
       { icon: "🎯", label: "Steer the next reply", hint: "a one-off instruction the characters follow", disabled: dis, onClick: () => this.steer() },
+      { icon: "⌨️", label: "Typed commands", hint: "/force, /say, /enter … type them in the box", onClick: () => this.showCommands() },
     ]);
+  }
+  /** Reference card for the slash commands (the list comes from the server so it never drifts). */
+  async showCommands() {
+    let list = [];
+    try { list = (await api.get("/api/ai/commands")).commands; } catch (e) { toast(e.message, "error"); return; }
+    const body = h("div", {},
+      h("p", { class: "muted small" }, "Type these in the message box. They are hard controls: directions always happen, and /say never goes through the AI."),
+      ...list.map((c) => h("div", { class: "cmd-row", style: { marginBottom: "10px" } }, h("code", {}, c.usage), h("div", { class: "muted small" }, c.help))),
+    );
+    const m = modal({ title: "Commands", body, foot: h("button", { class: "btn primary", onClick: () => m.close() }, "Got it") });
   }
   setBusy(on) { this.sendBtn.classList.toggle("stop", on); this.sendBtn.textContent = on ? "■" : "➤"; this.sendBtn.title = on ? "Stop" : "Send"; }
   status(text) {
@@ -244,6 +255,7 @@ class RoleplayView {
     const text = this.ta.value.trim();
     if (this.busy) return;
     if (!text && !speaker) return;
+    if (/^\/(help|\?|commands)?$/i.test(text)) { this.ta.value = ""; this.ta.dispatchEvent(new Event("input")); return this.showCommands(); }
     this.ta.value = ""; this.ta.dispatchEvent(new Event("input"));
     this.suggestEl.innerHTML = "";
     await this.run(`/api/ai/chats/${this.chat.id}/reply`, { text: text || undefined, mode: "reply", speaker });
@@ -299,6 +311,7 @@ class RoleplayView {
           case "state": this.chat.state = d.state; this.chat.memory = d.memory; this.timeline = d.timeline; this.drawPanel(); this.status(null); break;
           case "suggestions": this.showSuggestions(d.suggestions); break;
           case "title": this.chat.title = d.title; this.titleEl.textContent = d.title; loadLists(); break;
+          case "note": this.chat.director_note = d.director_note; this.drawPanel(); toast(d.director_note ? "Director's note set. The AI follows it on every reply here." : "Director's note cleared.", "ok"); break;
           case "error": toast(d.error, "error"); this.status(null); break;
         }
       });
