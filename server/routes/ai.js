@@ -77,53 +77,53 @@ aiRoutes.post("/chats/:id/direct", wrap(async (req, res) => {
   finally { end(); }
 }));
 
-aiRoutes.post("/chats/:id/suggest", wrap(async (req, res) => {
+/**
+ * Long-running AI jobs answer over SSE too: headers go out immediately and a ping every
+ * 15 s keeps proxies (Render/Cloudflare ~100 s idle limit) from cutting the connection.
+ * Events: status, result, error. `fn` may throw a { status, message } for validation errors.
+ */
+const job = (fn) => wrap(async (req, res) => {
   if (needKey(res)) return;
-  res.json({ suggestions: await ai.suggestActions(req.params.id) });
-}));
-aiRoutes.post("/chats/:id/impersonate", wrap(async (req, res) => {
-  if (needKey(res)) return;
-  res.json({ text: await ai.impersonate(req.params.id, req.body?.hint) });
-}));
-aiRoutes.post("/chats/:id/summarize", wrap(async (req, res) => {
-  if (needKey(res)) return;
+  let ready;
+  try { ready = await fn.validate?.(req); } catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
+  const { emit, end } = sse(res);
+  try { emit("result", await fn(req, emit, ready)); }
+  catch (e) { console.error("[job]", e); emit("error", { error: describeError(e) }); }
+  finally { end(); }
+});
+const bad = (message) => Object.assign(new Error(message), { status: 400 });
+
+aiRoutes.post("/chats/:id/suggest", job(async (req) => ({ suggestions: await ai.suggestActions(req.params.id) })));
+aiRoutes.post("/chats/:id/impersonate", job(async (req) => ({ text: await ai.impersonate(req.params.id, req.body?.hint) })));
+aiRoutes.post("/chats/:id/summarize", job(async (req, emit) => {
   const ctx = ai.loadChatContext(req.params.id);
-  // Force: summarize everything except the last keepRecent messages.
-  ctx.s.contextBudget = 0;
-  const summary = await ai.maybeSummarize({ ...ctx, s: { ...ctx.s, autoSummarize: true } });
-  res.json({ summary: summary ?? ctx.chat.summary, chat: db.chats.get(req.params.id) });
+  ctx.s.contextBudget = 0; // force: summarize everything except the last keepRecent messages
+  const summary = await ai.maybeSummarize({ ...ctx, s: { ...ctx.s, autoSummarize: true } }, emit);
+  return { summary: summary ?? ctx.chat.summary, chat: db.chats.get(req.params.id) };
 }));
-aiRoutes.post("/chats/:id/refresh-state", wrap(async (req, res) => {
-  if (needKey(res)) return;
+aiRoutes.post("/chats/:id/refresh-state", job(async (req, emit) => {
   const ctx = ai.loadChatContext(req.params.id);
   const msgs = ctx.history;
   const lastA = [...msgs].reverse().find((m) => m.role === "assistant");
   const lastU = [...msgs].reverse().find((m) => m.role === "user" && (!lastA || m.seq < lastA.seq));
   const t = (m) => (m ? m.alternatives?.[m.active ?? 0] ?? "" : "");
-  const r = await ai.extractState({ ...ctx, s: { ...ctx.s, autoState: true } }, t(lastU), t(lastA) || "(no reply yet)");
-  res.json({ state: r.state, memory: r.memory, timeline: db.timeline.list(req.params.id) });
+  const r = await ai.extractState({ ...ctx, s: { ...ctx.s, autoState: true } }, t(lastU), t(lastA) || "(no reply yet)", emit);
+  return { state: r.state, memory: r.memory, timeline: db.timeline.list(req.params.id) };
 }));
-aiRoutes.post("/chats/:id/title", wrap(async (req, res) => {
-  if (needKey(res)) return;
-  res.json({ title: await ai.autoTitle(req.params.id) });
-}));
+aiRoutes.post("/chats/:id/title", job(async (req) => ({ title: await ai.autoTitle(req.params.id) })));
 
 // Character / world generation
-aiRoutes.post("/generate/character", wrap(async (req, res) => {
-  if (needKey(res)) return;
-  const { prompt, existing } = req.body || {};
-  if (!prompt && !existing) return res.status(400).json({ error: "prompt required" });
-  res.json(await ai.generateCharacter(prompt, existing));
-}));
-aiRoutes.post("/generate/field", wrap(async (req, res) => {
-  if (needKey(res)) return;
-  const { character, field, guidance } = req.body || {};
-  if (!field) return res.status(400).json({ error: "field required" });
-  res.json({ text: await ai.enhanceField(character || {}, field, guidance) });
-}));
-aiRoutes.post("/generate/world", wrap(async (req, res) => {
-  if (needKey(res)) return;
-  const { prompt } = req.body || {};
-  if (!prompt) return res.status(400).json({ error: "prompt required" });
-  res.json(await ai.generateWorld(prompt));
-}));
+const genCharacter = async (req, emit) => {
+  emit("status", { text: "Designing the character…" });
+  return ai.generateCharacter(req.body?.prompt, req.body?.existing);
+};
+genCharacter.validate = (req) => { if (!req.body?.prompt && !req.body?.existing) throw bad("prompt required"); };
+aiRoutes.post("/generate/character", job(genCharacter));
+
+const genField = async (req) => ({ text: await ai.enhanceField(req.body?.character || {}, req.body.field, req.body?.guidance) });
+genField.validate = (req) => { if (!req.body?.field) throw bad("field required"); };
+aiRoutes.post("/generate/field", job(genField));
+
+const genWorld = async (req, emit) => { emit("status", { text: "Building the world…" }); return ai.generateWorld(req.body.prompt); };
+genWorld.validate = (req) => { if (!req.body?.prompt) throw bad("prompt required"); };
+aiRoutes.post("/generate/world", job(genWorld));

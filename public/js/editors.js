@@ -25,7 +25,7 @@ export async function characterEditor(main, id) {
     try {
       const guidance = await prompt(`AI: write "${label}"`, { placeholder: "Optional guidance (tone, details to include)…", okText: "Generate" });
       if (guidance === null) return;
-      const r = await api.post("/api/ai/generate/field", { character: collect(), field: key, guidance });
+      const r = await api.job("/api/ai/generate/field", { character: collect(), field: key, guidance });
       F[key].value = r.text;
     } catch (err) { toast(err.message, "error"); }
     finally { btn.disabled = false; btn.textContent = "✨ AI"; }
@@ -82,12 +82,12 @@ export async function characterEditor(main, id) {
   genBtn.addEventListener("click", async () => {
     if (!genPrompt.value.trim()) return toast("Describe the character first.", "error");
     aiBusy(genBtn, true);
-    try { fill(await api.post("/api/ai/generate/character", { prompt: genPrompt.value })); toast("Character generated — review and save.", "ok"); }
+    try { fill(await api.job("/api/ai/generate/character", { prompt: genPrompt.value })); toast("Character generated — review and save.", "ok"); }
     catch (e) { toast(e.message, "error"); } finally { aiBusy(genBtn, false); }
   });
   fillBtn.addEventListener("click", async () => {
     aiBusy(fillBtn, true);
-    try { fill(await api.post("/api/ai/generate/character", { prompt: genPrompt.value, existing: collect() })); toast("Filled in — review and save.", "ok"); }
+    try { fill(await api.job("/api/ai/generate/character", { prompt: genPrompt.value, existing: collect() })); toast("Filled in — review and save.", "ok"); }
     catch (e) { toast(e.message, "error"); } finally { aiBusy(fillBtn, false); }
   });
 
@@ -192,7 +192,7 @@ export async function worldEditor(main, id) {
     if (!genPrompt.value.trim()) return toast("Describe the world first.", "error");
     aiBusy(genBtn, true);
     try {
-      const g = await api.post("/api/ai/generate/world", { prompt: genPrompt.value });
+      const g = await api.job("/api/ai/generate/world", { prompt: genPrompt.value });
       if (!name.value) name.value = g.name;
       if (!desc.value) desc.value = g.description; else desc.value += "\n\n" + g.description;
       w.entries.push(...g.entries.map((e) => ({ ...e, id: crypto.randomUUID() })));

@@ -335,7 +335,7 @@ class ChatView {
   async suggest() {
     if (this.busy) return;
     this.status("Thinking about what you could do…");
-    try { this.showSuggestions((await api.post(`/api/ai/chats/${this.chat.id}/suggest`)).suggestions); }
+    try { this.showSuggestions((await api.job(`/api/ai/chats/${this.chat.id}/suggest`)).suggestions); }
     catch (e) { toast(e.message, "error"); } finally { this.status(null); }
   }
   async impersonate() {
@@ -343,7 +343,7 @@ class ChatView {
     const hint = await prompt("Write for me", { placeholder: "Optional direction, e.g. 'be flirtatious but guarded'", okText: "Write" });
     if (hint === null) return;
     this.status(`Writing as ${this.userName}…`);
-    try { const r = await api.post(`/api/ai/chats/${this.chat.id}/impersonate`, { hint }); this.ta.value = r.text; this.ta.dispatchEvent(new Event("input")); this.ta.focus(); }
+    try { const r = await api.job(`/api/ai/chats/${this.chat.id}/impersonate`, { hint }); this.ta.value = r.text; this.ta.dispatchEvent(new Event("input")); this.ta.focus(); }
     catch (e) { toast(e.message, "error"); } finally { this.status(null); }
   }
 
@@ -353,7 +353,7 @@ class ChatView {
     this.panel.innerHTML = "";
     const tabs = h("div", { class: "panel-tabs" }, ["state", "memory", "timeline", "story"].map((t) => h("button", { class: t === this.panelTab ? "active" : "", onClick: () => { this.panelTab = t; this.drawPanel(); } }, { state: "🌍 World", memory: "🧠 Memory", timeline: "📜 Timeline", story: "📚 Story" }[t])));
     const box = h("div", { class: "panel-inner" }, h("div", { class: "row between", style: { marginBottom: "10px" } }, h("b", {}, "Living world"), h("button", { class: "btn ghost icon only-mobile", onClick: () => togglePanel(false) }, "✕")), tabs);
-    const refreshBtn = h("button", { class: "btn sm ghost", title: "Re-derive state from the latest messages", onClick: async () => { refreshBtn.disabled = true; try { const r = await api.post(`/api/ai/chats/${c.id}/refresh-state`); c.state = r.state; c.memory = r.memory; this.timeline = r.timeline; this.drawPanel(); } catch (e) { toast(e.message, "error"); } finally { refreshBtn.disabled = false; } } }, "↻");
+    const refreshBtn = h("button", { class: "btn sm ghost", title: "Re-derive state from the latest messages", onClick: async () => { refreshBtn.disabled = true; try { const r = await api.job(`/api/ai/chats/${c.id}/refresh-state`); c.state = r.state; c.memory = r.memory; this.timeline = r.timeline; this.drawPanel(); } catch (e) { toast(e.message, "error"); } finally { refreshBtn.disabled = false; } } }, "↻");
 
     if (this.panelTab === "state") {
       box.append(h("h2", {}, "Now", refreshBtn));
@@ -401,7 +401,7 @@ class ChatView {
       for (const t of this.timeline) tl.append(h("div", { class: `tl-item ${t.kind}`, title: new Date(t.created_at).toLocaleString(), onClick: () => t.message_id && document.getElementById("m-" + t.message_id)?.scrollIntoView({ block: "center", behavior: "smooth" }) }, t.kind === "fact" ? "📌 " : t.kind === "note" ? "📝 " : "", t.text));
       box.append(tl);
     } else {
-      box.append(h("h2", {}, "Story so far", h("button", { class: "btn sm ghost", title: "Fold older messages into the summary now", onClick: async (e) => { e.currentTarget.disabled = true; try { const r = await api.post(`/api/ai/chats/${c.id}/summarize`); this.chat = r.chat; this.drawPanel(); toast("Summary updated", "ok"); } catch (err) { toast(err.message, "error"); } } }, "↻ Summarize now")));
+      box.append(h("h2", {}, "Story so far", h("button", { class: "btn sm ghost", title: "Fold older messages into the summary now", onClick: async (e) => { e.currentTarget.disabled = true; try { const r = await api.job(`/api/ai/chats/${c.id}/summarize`); this.chat = r.chat; this.drawPanel(); toast("Summary updated", "ok"); } catch (err) { toast(err.message, "error"); } } }, "↻ Summarize now")));
       if (!c.summary) box.append(h("div", { class: "muted small" }, "When the conversation outgrows the context budget, older messages are condensed here so nothing important is forgotten. You can also edit this by hand."));
       const ta = textarea(c.summary || "", { rows: 14, class: "input summary-text" });
       box.append(ta, h("div", { class: "row", style: { marginTop: "8px" } }, h("button", { class: "btn sm", onClick: async () => { await api.put(`/api/chats/${c.id}`, { summary: ta.value }); c.summary = ta.value; toast("Saved", "ok"); } }, "Save summary")));

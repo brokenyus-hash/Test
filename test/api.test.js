@@ -14,6 +14,14 @@ const post = (u, b) => fetch(base + u, { method: "POST", headers: { "content-typ
 const put = (u, b) => fetch(base + u, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(b || {}) }).then(j);
 const del = (u) => fetch(base + u, { method: "DELETE" }).then(j);
 
+/** POST an SSE "job" endpoint and return its result (throws on error event). */
+async function job(u, b) {
+  const events = await sse(u, b);
+  const err = events.find((e) => e[0] === "error");
+  if (err) throw new Error(err[1].error);
+  return events.find((e) => e[0] === "result")[1];
+}
+
 /** Consume an SSE POST into a list of [event, data]. */
 async function sse(u, b) {
   const r = await fetch(base + u, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b || {}) });
@@ -154,15 +162,17 @@ test("narrator directions, suggestions, impersonation, generation", async () => 
   const um = ev.find((e) => e[0] === "user_message")[1].message;
   assert.equal(um.kind, "direction");
   assert.match(um.alternatives[0], /Three hours pass/);
-  const sug = await post(`/api/ai/chats/${chatId}/suggest`);
+  const sug = await job(`/api/ai/chats/${chatId}/suggest`);
   assert.ok(sug.suggestions.length >= 3);
-  const imp = await post(`/api/ai/chats/${chatId}/impersonate`, { hint: "be bold" });
+  const imp = await job(`/api/ai/chats/${chatId}/impersonate`, { hint: "be bold" });
   assert.ok(imp.text.length > 10);
-  const gen = await post("/api/ai/generate/character", { prompt: "a tired bounty hunter" });
+  const badReq = await fetch(`${base}/api/ai/generate/character`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  assert.equal(badReq.status, 400, "validation errors stay plain JSON");
+  const gen = await job("/api/ai/generate/character", { prompt: "a tired bounty hunter" });
   assert.ok(gen.name && gen.greeting && gen.likes.length >= 3);
-  const fld = await post("/api/ai/generate/field", { character: gen, field: "backstory" });
+  const fld = await job("/api/ai/generate/field", { character: gen, field: "backstory" });
   assert.ok(fld.text);
-  const world = await post("/api/ai/generate/world", { prompt: "drowned kingdom" });
+  const world = await job("/api/ai/generate/world", { prompt: "drowned kingdom" });
   assert.ok(world.entries.length >= 6);
 });
 
@@ -235,7 +245,7 @@ test("xAI (Grok) provider: streaming, reasoning, structured state, live model li
   assert.equal(stateReq.body.model, "grok-4.3", "utility model used for state extraction");
   assert.equal(stateReq.body.response_format.json_schema.strict, true);
   assert.equal(stateReq.body.response_format.json_schema.schema.additionalProperties, false);
-  const gen = await post("/api/ai/generate/character", { prompt: "a grok-made rogue" });
+  const gen = await job("/api/ai/generate/character", { prompt: "a grok-made rogue" });
   assert.ok(gen.name && gen.likes.length >= 3);
   await del(`/api/chats/${chat.id}`);
   await put("/api/settings", { provider: "anthropic", xaiKey: "", showThinking: false });

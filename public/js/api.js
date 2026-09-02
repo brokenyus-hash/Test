@@ -60,3 +60,16 @@ export function stream(url, body, onEvent) {
   p.abort = () => ac.abort();
   return p;
 }
+
+/** POST a long-running AI job (SSE: status/result/error) and resolve with the result. */
+export async function job(url, body, onStatus) {
+  let result, error;
+  await stream(url, body, (ev, d) => {
+    if (ev === "result") result = d;
+    else if (ev === "error") error = d.error;
+    else if (ev === "status") onStatus?.(d.text);
+  });
+  if (error) throw new Error(error);
+  if (result === undefined) throw new Error("The connection dropped before the result arrived. Please try again.");
+  return result;
+}

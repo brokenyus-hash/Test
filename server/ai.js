@@ -21,6 +21,8 @@ export function loadChatContext(chatId) {
 }
 
 // Provider-aware helpers: utility calls use the utility model unless a model is given.
+// Creative generation effort: Grok's "high" roughly triples latency (~50 s vs ~20 s per card), so keep it medium there.
+const genEffort = () => (settings().provider === "xai" ? "medium" : "high");
 const structured = (p) => { const s = settings(); return providerStructured({ provider: s.provider, model: s.activeUtilityModel, effort: s.utilityEffort, maxTokens: 8000, ...p }); };
 const complete = (p) => { const s = settings(); return providerComplete({ provider: s.provider, model: s.activeUtilityModel, effort: s.utilityEffort, maxTokens: 4000, ...p }); };
 
@@ -290,7 +292,7 @@ export async function generateCharacter(prompt, existing) {
     messages: [{ role: "user", content: existing
       ? `Here is a partial character card as JSON. Fill in every missing or thin field and improve weak ones while preserving what is already established:\n${JSON.stringify(existing, null, 2)}\n\nExtra guidance: ${prompt || "none"}`
       : `Create a complete character from this concept:\n${prompt}` }],
-    effort: "high",
+    effort: genEffort(),
     maxTokens: 12000,
   });
   return data;
@@ -300,7 +302,7 @@ export async function enhanceField(character, field, guidance) {
   const { text: t } = await complete({
     system: "You are an expert character writer for interactive fiction. Output only the rewritten field text, no preamble.",
     messages: [{ role: "user", content: `Character card:\n${JSON.stringify(character, null, 2)}\n\nRewrite/expand the field "${field}" so it is vivid, specific and consistent with the rest of the card.${guidance ? " Guidance: " + guidance : ""}${field === "greeting" ? " Write it as an in-scene opening message with *actions* and dialogue, addressed to {{user}}." : ""}` }],
-    effort: "high",
+    effort: genEffort(),
     maxTokens: 3000,
   });
   return t.trim();
@@ -324,7 +326,7 @@ export async function generateWorld(prompt) {
     schema: WorldSchema,
     system: "You are a worldbuilder for interactive fiction. Build settings with texture: places, factions, customs, dangers, notable people, and secrets. Lore entries must be triggerable by concrete keywords.",
     messages: [{ role: "user", content: `Build a world from this concept:\n${prompt}` }],
-    effort: "high",
+    effort: genEffort(),
     maxTokens: 14000,
   });
   return data;
