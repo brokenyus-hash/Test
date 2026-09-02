@@ -1,0 +1,83 @@
+# Auto-deploy on push: every 2 minutes a tiny CronJob asks GitHub for the branch head and, if it
+# moved, stamps the new commit on the Deployment. That triggers a rollout; the init container pulls
+# the code. No inbound access, no registry, no CI secrets needed for a public repo.
+# (Optional: create secret `tavern-github` with key `token` to raise GitHub's API rate limit / private repos.)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tavern-deployer
+  namespace: tavern
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: tavern-deployer
+  namespace: tavern
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["tavern"]
+    verbs: ["get", "patch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["tavern-config"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: tavern-deployer
+  namespace: tavern
+subjects:
+  - kind: ServiceAccount
+    name: tavern-deployer
+    namespace: tavern
+roleRef:
+  kind: Role
+  name: tavern-deployer
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: tavern-autodeploy
+  namespace: tavern
+spec:
+  schedule: "*/2 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        spec:
+          serviceAccountName: tavern-deployer
+          restartPolicy: Never
+          containers:
+            - name: check
+              image: curlimages/curl:8.10.1
+              envFrom:
+                - configMapRef: { name: tavern-config }
+              env:
+                - name: GITHUB_TOKEN
+                  valueFrom: { secretKeyRef: { name: tavern-github, key: token, optional: true } }
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -e
+                  REPO=$(echo "$REPO_URL" | sed -E 's#https://github.com/##; s#\.git$##')
+                  AUTH=""; [ -n "$GITHUB_TOKEN" ] && AUTH="-H \"Authorization: Bearer $GITHUB_TOKEN\""
+                  LATEST=$(eval curl -fsS $AUTH -H "Accept: application/vnd.github.sha" "https://api.github.com/repos/$REPO/commits/$REPO_BRANCH")
+                  [ -n "$LATEST" ] || { echo "could not read branch head"; exit 1; }
+                  API="https://kubernetes.default.svc"
+                  SA=/var/run/secrets/kubernetes.io/serviceaccount
+                  K="curl -fsS --cacert $SA/ca.crt -H \"Authorization: Bearer $(cat $SA/token)\""
+                  CURRENT=$(eval $K "$API/apis/apps/v1/namespaces/tavern/deployments/tavern" | sed -n 's/.*"tavern\/commit":"\([0-9a-f]*\)".*/\1/p' | head -1)
+                  echo "latest=$LATEST current=${CURRENT:-none}"
+                  if [ "$LATEST" != "$CURRENT" ]; then
+                    echo "new commit -> rolling out"
+                    eval $K -X PATCH -H '"Content-Type: application/strategic-merge-patch+json"' \
+                      -d "'{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"tavern/commit\":\"$LATEST\"}}}}}'" \
+                      "$API/apis/apps/v1/namespaces/tavern/deployments/tavern" > /dev/null
+                  fi

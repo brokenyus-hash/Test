@@ -92,7 +92,7 @@ curl -fsSL https://raw.githubusercontent.com/brokenyus-hash/Test/claude/ai-rolep
   | XAI_API_KEY=xai-... APP_PASSWORD=choose-a-password bash
 ```
 
-It finds `kubectl` (plain, `k3s kubectl` or `microk8s kubectl`), applies `deploy/k8s/tavern.yaml`, stores the keys in a Secret, and exposes the app through the cluster's Ingress at `http://tavern.<server-ip>.nip.io` (or on NodePort `30080` if there is no ingress controller). Re-run the same command to update. See `deploy/` for the manifests.
+It finds `kubectl` (plain, `k3s kubectl` or `microk8s kubectl`), applies `deploy/k8s/tavern.yaml`, stores the keys in a Secret, and exposes the app through the cluster's Ingress at `http://tavern.<server-ip>.nip.io` (or on NodePort `30080` if there is no ingress controller). It also installs `deploy/k8s/autodeploy.yaml`: a CronJob that checks the branch on GitHub every two minutes and rolls out any new commit, so **pushing to the branch is deploying**. See `deploy/` for the manifests.
 
 **Railway / Fly.io / any Docker host:**
 

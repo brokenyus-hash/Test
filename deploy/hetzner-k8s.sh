@@ -28,6 +28,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
 fetch() { if [ -n "$HERE" ] && [ -f "$HERE/k8s/$1" ]; then cat "$HERE/k8s/$1"; else curl -fsSL "$REPO_RAW/$1"; fi; }
 
 fetch tavern.yaml | $K apply -f -
+fetch autodeploy.yaml | $K apply -f -      # redeploys automatically whenever the branch moves
 [ -n "${BRANCH:-}" ] && $K -n tavern patch configmap tavern-config -p "{\"data\":{\"REPO_BRANCH\":\"$BRANCH\"}}" >/dev/null
 
 $K -n tavern create secret generic tavern-secrets \
@@ -64,6 +65,7 @@ cat <<MSG
 Useful:
    $K -n tavern logs deploy/tavern -f            # server logs
    $K -n tavern logs deploy/tavern -c fetch      # clone/install log
-   re-run this script                            # update to the latest code
+   (updates are automatic: every 2 min the cluster checks GitHub and rolls out new commits)
+   $K -n tavern get cronjob,jobs               # auto-deploy activity
    /var/lib/tavern/data/tavern.sqlite            # your chats (back this up)
 MSG
