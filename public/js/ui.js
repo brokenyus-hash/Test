@@ -192,3 +192,38 @@ export function readImageAsDataUrl(maxSize = 256) {
     document.body.append(inp); inp.click(); inp.remove();
   });
 }
+
+/**
+ * Popover menu anchored to an element (bottom sheet on phones).
+ * items: [{label, icon, hint, danger, disabled, onClick}] or "-" for a divider or {header}.
+ */
+export function menu(anchor, items) {
+  const back = h("div", { class: "menu-back" });
+  const m = h("div", { class: "menu sheet" });
+  const close = () => { back.remove(); m.remove(); };
+  for (const it of items) {
+    if (it === "-") { m.append(h("hr")); continue; }
+    if (it.header) { m.append(h("div", { class: "mh" }, it.header)); continue; }
+    m.append(h("button", { class: `mi ${it.danger ? "danger" : ""}`, disabled: it.disabled, onClick: () => { close(); it.onClick?.(); } },
+      h("span", { class: "ico" }, it.icon || ""), h("span", {}, it.label, it.hint ? h("small", {}, it.hint) : null)));
+  }
+  back.addEventListener("mousedown", close);
+  back.addEventListener("touchstart", close, { passive: true });
+  document.body.append(back, m);
+  const r = anchor.getBoundingClientRect();
+  const mw = m.offsetWidth, mh = m.offsetHeight;
+  let left = Math.min(Math.max(8, r.left), window.innerWidth - mw - 8);
+  let top = r.bottom + 6;
+  if (top + mh > window.innerHeight - 8) top = Math.max(8, r.top - mh - 6);
+  m.style.left = left + "px"; m.style.top = top + "px";
+  return close;
+}
+
+export function checkbox(label, checked, onChange) {
+  const inp = h("input", { type: "checkbox" });
+  inp.checked = !!checked;
+  inp.addEventListener("change", () => onChange?.(inp.checked));
+  return h("label", { class: "row", style: { gap: "8px", cursor: "pointer" } }, inp, h("span", {}, label));
+}
+
+export function isMobile() { return window.matchMedia("(max-width: 900px)").matches; }

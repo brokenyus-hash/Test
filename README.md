@@ -28,6 +28,12 @@ npm test
 
 ## What it does
 
+### Accounts
+Every person signs up with a username and password (scrypt-hashed, cookie sessions). Roleplays, characters, worlds, personas, API keys and settings are private to the account. The first account becomes admin; set `ALLOW_SIGNUP=false` to close registration after your friends have joined. Server-wide keys in the environment act as a fallback for users who haven't added their own.
+
+### Roleplays with a cast
+A roleplay is its own thing: a premise, a world, your persona, and a **cast** of one or more characters. With one character it's a classic chat. With several, a **director** step runs before every AI turn and decides, from the premise, the world state and the last few lines, **who responds** (one to three speakers, or the Narrator), **who enters or leaves** (present / nearby / away / gone), and occasionally **who new walks in**: a newcomer gets a short brief on the spot, joins the cast, and can later be promoted to a full character card in your library with one tap. Each speaker writes only for themselves, sees what the others said this turn, and is attributed in the transcript. You can always override: tap a cast member to make them speak, change where they are, add someone from your library, or invent a bystander.
+
 ### Characters
 - Full character cards: description, personality, appearance, backstory, speech style, likes / dislikes, goals, **secrets that surface through play**, relationships, scenario, greeting + alternative openings, example dialogue, tags, avatar (emoji, URL or uploaded image), accent colour.
 - **✨ AI character creator** – describe a concept, get a complete playable card (structured output, validated against a schema). **Fill in the blanks** completes only what you left empty. Every field has its own **✨ AI** button to rewrite that field with optional guidance.
@@ -40,7 +46,7 @@ npm test
 - Description plus lore entries with **keywords, priority and always-on flags**. Always-on entries live in the (cached) system prompt; keyword entries are injected only when their keywords appear in the recent conversation, with a token budget – so a 100-entry world stays cheap.
 - **✨ AI worldbuilder** generates a whole lorebook from a paragraph.
 
-### The chat
+### The roleplay screen
 - Streaming replies with a live typing cursor, optional visible thinking summary.
 - **Regenerate** (keeps every alternative, swipe ‹ › between them), **Continue** an unfinished reply, **Edit**, **Delete** (one or cascade), **Hide** from context, **Bookmark**, **Branch** the story from any message, **Copy**.
 - **💡 Suggest** – 4 genuinely different next moves, each with a tone label. **🪄 Write for me** – the AI drafts your next message in your persona's voice; you edit before sending.

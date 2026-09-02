@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { api } from "./routes/api.js";
 import { aiRoutes } from "./routes/ai.js";
 import { describeError } from "./claude.js";
+import { sessionMiddleware } from "./auth.js";
 import { createRequire } from "node:module";
 
 const APP_VERSION = createRequire(import.meta.url)("../package.json").version;
@@ -31,6 +32,8 @@ if (process.env.APP_PASSWORD) {
   });
 }
 
+app.set("trust proxy", 1);
+app.use(sessionMiddleware);
 app.use("/api/ai", aiRoutes);
 app.use("/api", api);
 

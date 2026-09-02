@@ -1,6 +1,5 @@
 // Claude client + shared helpers (model settings, token estimation, structured calls).
 import Anthropic from "@anthropic-ai/sdk";
-import { getSetting } from "./db.js";
 
 export const DEFAULTS = {
   provider: "anthropic",     // anthropic | xai
@@ -43,12 +42,24 @@ function defaultProvider() {
   return "anthropic";
 }
 
-export function settings() {
+export const SECRET_KEYS = ["apiKey", "xaiKey", "xaiBaseUrl"];
+
+/**
+ * Effective settings for a user: defaults <- environment <- the user's saved settings.
+ * Includes resolved credentials (anthropicKey / xaiKey / xaiBaseUrl) and active models.
+ */
+export function settings(user) {
+  const us = user?.settings || {};
   const s = { ...DEFAULTS, provider: defaultProvider() };
   for (const k of Object.keys(DEFAULTS)) {
-    const v = getSetting(k);
+    const v = us[k];
     if (v !== null && v !== undefined && v !== "") s[k] = v;
   }
+  s.anthropicKey = us.apiKey || process.env.ANTHROPIC_API_KEY || null;
+  s.anthropicKeySource = us.apiKey ? "user" : process.env.ANTHROPIC_API_KEY ? "env" : null;
+  s.xaiKey = us.xaiKey || process.env.XAI_API_KEY || null;
+  s.xaiKeySource = us.xaiKey ? "user" : process.env.XAI_API_KEY ? "env" : null;
+  s.xaiBaseUrl = us.xaiBaseUrl || process.env.XAI_BASE_URL || null;
   return resolveModels(s);
 }
 
@@ -60,13 +71,12 @@ export function resolveModels(s) {
   return s;
 }
 
-export function hasCredentials() {
-  return !!(getSetting("apiKey") || process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN);
+export function hasCredentials(s) {
+  return !!(s.anthropicKey || process.env.ANTHROPIC_AUTH_TOKEN);
 }
 
-export function client() {
-  const apiKey = getSetting("apiKey") || undefined; // undefined -> env / `ant auth login` profile
-  return new Anthropic({ apiKey, maxRetries: 2 });
+export function client(s) {
+  return new Anthropic({ apiKey: s?.anthropicKey || undefined, maxRetries: 2 });
 }
 
 /** Rough token estimate (chars / 3.6) - good enough for budgeting; the API is the source of truth. */
@@ -102,11 +112,10 @@ export function fallbackParams(model, enabled) {
  * Structured JSON call. Uses messages.parse with a Zod output format.
  * Returns parsed object or throws.
  */
-export async function structured({ schema, system, messages, model, effort, maxTokens = 8000 }) {
+export async function structured({ s, schema, system, messages, model, effort, maxTokens = 8000 }) {
   const { zodOutputFormat } = await import("@anthropic-ai/sdk/helpers/zod");
-  const s = settings();
   const m = model || s.activeUtilityModel;
-  const c = client();
+  const c = client(s);
   const res = await c.messages.parse({
     model: m,
     max_tokens: maxTokens,
@@ -124,10 +133,9 @@ export async function structured({ schema, system, messages, model, effort, maxT
 }
 
 /** Plain text call (non-streaming). */
-export async function complete({ system, messages, model, effort, maxTokens = 4000 }) {
-  const s = settings();
+export async function complete({ s, system, messages, model, effort, maxTokens = 4000 }) {
   const m = model || s.activeUtilityModel;
-  const c = client();
+  const c = client(s);
   const res = await c.messages.create({
     model: m,
     max_tokens: maxTokens,
@@ -143,8 +151,8 @@ export async function complete({ system, messages, model, effort, maxTokens = 40
  * Stream a reply through the Messages API. Returns { text, thinking, usage, stopReason, note }.
  * Uses the beta endpoint with server-side refusal fallbacks when enabled and supported.
  */
-export async function streamText({ model, system, messages, maxTokens, effort, showThinking, fallbacks, signal, onDelta, onThinking }) {
-  const c = client();
+export async function streamText({ s, model, system, messages, maxTokens, effort, showThinking, fallbacks, signal, onDelta, onThinking }) {
+  const c = client(s);
   const fb = fallbackParams(model, fallbacks);
   const params = {
     model, max_tokens: maxTokens, system, messages,

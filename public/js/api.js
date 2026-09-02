@@ -1,14 +1,13 @@
-// Thin API client + SSE-over-POST stream reader.
+// Thin API client + SSE-over-POST stream reader. A 401 anywhere raises the sign-in screen.
+export class ApiError extends Error { constructor(message, status, code) { super(message); this.status = status; this.code = code; } }
+
 async function req(method, url, body) {
-  const res = await fetch(url, {
-    method,
-    headers: body ? { "Content-Type": "application/json" } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  const res = await fetch(url, { method, headers: body ? { "Content-Type": "application/json" } : undefined, body: body ? JSON.stringify(body) : undefined, credentials: "same-origin" });
   if (!res.ok) {
-    let msg = res.statusText;
-    try { msg = (await res.json()).error || msg; } catch { /* ignore */ }
-    throw new Error(msg);
+    let msg = res.statusText, code;
+    try { const j = await res.json(); msg = j.error || msg; code = j.code; } catch { /* ignore */ }
+    if (res.status === 401 && code === "unauthenticated") window.dispatchEvent(new CustomEvent("auth:required"));
+    throw new ApiError(msg, res.status, code);
   }
   const ct = res.headers.get("content-type") || "";
   return ct.includes("json") ? res.json() : res.text();
@@ -18,23 +17,16 @@ export const post = (u, b = {}) => req("POST", u, b);
 export const put = (u, b = {}) => req("PUT", u, b);
 export const del = (u) => req("DELETE", u);
 
-/**
- * POST and consume a Server-Sent-Events response.
- * onEvent(name, data) is called for each event. Returns an abort() handle via the returned promise's .abort.
- */
+/** POST and consume a Server-Sent-Events response; onEvent(name, data). The returned promise has .abort(). */
 export function stream(url, body, onEvent) {
   const ac = new AbortController();
   const p = (async () => {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body || {}),
-      signal: ac.signal,
-    });
+    const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}), signal: ac.signal, credentials: "same-origin" });
     if (!res.ok) {
-      let msg = res.statusText;
-      try { msg = (await res.json()).error || msg; } catch { /* ignore */ }
-      throw new Error(msg);
+      let msg = res.statusText, code;
+      try { const j = await res.json(); msg = j.error || msg; code = j.code; } catch { /* ignore */ }
+      if (res.status === 401 && code === "unauthenticated") window.dispatchEvent(new CustomEvent("auth:required"));
+      throw new ApiError(msg, res.status, code);
     }
     const reader = res.body.getReader();
     const dec = new TextDecoder();

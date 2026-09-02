@@ -37,14 +37,14 @@ export function instanceFromSchema(schema, hint = "", root = schema) {
 }
 
 /** OpenAI-style chat completions (used by the xAI provider). */
-function openaiCompat(req, res, json) {
+function openaiCompat(req, res, json, script = []) {
   if (!req.headers.authorization) {
     res.writeHead(401, { "content-type": "application/json" });
     return res.end(JSON.stringify({ error: { message: "missing bearer token" } }));
   }
   let text = REPLY;
   const rf = json.response_format;
-  if (rf?.type === "json_schema") text = JSON.stringify(instanceFromSchema(rf.json_schema.schema));
+  if (rf?.type === "json_schema") text = JSON.stringify(script.length ? script.shift() : instanceFromSchema(rf.json_schema.schema));
   const usage = { prompt_tokens: 150, completion_tokens: 40, total_tokens: 190, prompt_tokens_details: { cached_tokens: 100 } };
   if (json.stream) {
     res.writeHead(200, { "content-type": "text/event-stream" });
@@ -72,6 +72,7 @@ const REPLY = `*The mock character considers you for a long moment, rain ticking
 
 export function startMock({ port = 0, reply = REPLY, delayMs = 2 } = {}) {
   const requests = [];
+  const script = []; // queued structured responses (objects) used instead of schema-synthesised ones
   const server = http.createServer((req, res) => {
     let body = "";
     req.on("data", (c) => (body += c));
@@ -82,7 +83,7 @@ export function startMock({ port = 0, reply = REPLY, delayMs = 2 } = {}) {
         res.writeHead(200, { "content-type": "application/json" });
         return res.end(JSON.stringify({ data: [{ id: "grok-4.6" }, { id: "grok-4.3" }, { id: "grok-imagine-image" }] }));
       }
-      if (req.url.startsWith("/v1/chat/completions")) return openaiCompat(req, res, json, requests);
+      if (req.url.startsWith("/v1/chat/completions")) return openaiCompat(req, res, json, script);
       if (!req.url.startsWith("/v1/messages")) { res.writeHead(404); return res.end("{}"); }
       if (!req.headers["x-api-key"] && !req.headers.authorization) {
         res.writeHead(401, { "content-type": "application/json" });
@@ -90,7 +91,7 @@ export function startMock({ port = 0, reply = REPLY, delayMs = 2 } = {}) {
       }
       let text = reply;
       const fmt = json.output_config?.format;
-      if (fmt?.schema) text = JSON.stringify(instanceFromSchema(fmt.schema));
+      if (fmt?.schema) text = JSON.stringify(script.length ? script.shift() : instanceFromSchema(fmt.schema));
       const usage = { input_tokens: 120, output_tokens: 40, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
       if (json.stream) {
         res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
@@ -117,7 +118,7 @@ export function startMock({ port = 0, reply = REPLY, delayMs = 2 } = {}) {
       }
     });
   });
-  return new Promise((resolve) => server.listen(port, "127.0.0.1", () => resolve({ server, requests, url: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((r) => server.close(r)) })));
+  return new Promise((resolve) => server.listen(port, "127.0.0.1", () => resolve({ server, requests, script, url: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((r) => server.close(r)) })));
 }
 
 if (process.argv[1] && process.argv[1].endsWith("mock-anthropic.js")) {

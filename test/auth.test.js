@@ -27,16 +27,18 @@ test("APP_PASSWORD gates everything except /healthz", async () => {
   try {
     assert.equal(await status(base + "/healthz"), 200);
     assert.equal(await status(base + "/"), 401);
-    assert.equal(await status(base + "/api/stats"), 401);
-    assert.equal(await status(base + "/api/stats", basic("tavern", "wrong")), 401);
-    assert.equal(await status(base + "/api/stats", basic("tavern", "s3cret")), 200);
+    assert.equal(await status(base + "/api/auth/me"), 401);
+    assert.equal(await status(base + "/", basic("tavern", "wrong")), 401);
+    assert.equal(await status(base + "/", basic("tavern", "s3cret")), 200);
     assert.equal(await status(base + "/js/app.js", basic("tavern", "s3cret")), 200);
+    assert.equal(await status(base + "/api/auth/me", basic("tavern", "s3cret")), 200, "app auth endpoint reachable once past the gate");
   } finally { stop(); }
 });
 
 test("without APP_PASSWORD the app is open", async () => {
   const { base, stop } = await launch({ APP_PASSWORD: "" });
   try {
-    assert.equal(await status(base + "/api/stats"), 200);
+    assert.equal(await status(base + "/api/auth/me"), 200);
+    assert.equal(await status(base + "/api/stats"), 401, "account login still required");
   } finally { stop(); }
 });

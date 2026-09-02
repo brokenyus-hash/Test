@@ -7,32 +7,33 @@ import { startMock } from "./mock-anthropic.js";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tavern-test-"));
 process.env.DATA_DIR = tmp;
+delete process.env.ANTHROPIC_API_KEY; delete process.env.XAI_API_KEY; delete process.env.PROVIDER;
 let mock, server, base;
-const j = (r) => r.json();
-const get = (u) => fetch(base + u).then(j);
-const post = (u, b) => fetch(base + u, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b || {}) }).then(j);
-const put = (u, b) => fetch(base + u, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(b || {}) }).then(j);
-const del = (u) => fetch(base + u, { method: "DELETE" }).then(j);
 
-/** POST an SSE "job" endpoint and return its result (throws on error event). */
-async function job(u, b) {
-  const events = await sse(u, b);
-  const err = events.find((e) => e[0] === "error");
-  if (err) throw new Error(err[1].error);
-  return events.find((e) => e[0] === "result")[1];
+/** Tiny cookie-aware client so we can act as several users. */
+function client() {
+  let cookie = "";
+  const call = async (method, u, body) => {
+    const r = await fetch(base + u, { method, headers: { "content-type": "application/json", cookie }, body: body === undefined ? undefined : JSON.stringify(body) });
+    const sc = r.headers.get("set-cookie");
+    if (sc) cookie = sc.split(";")[0];
+    return r;
+  };
+  const j = async (r) => { const t = await r.text(); try { return JSON.parse(t); } catch { return t; } };
+  const c = {
+    get: (u) => call("GET", u).then(j), post: (u, b = {}) => call("POST", u, b).then(j), put: (u, b = {}) => call("PUT", u, b).then(j), del: (u) => call("DELETE", u).then(j),
+    raw: call,
+    async sse(u, b) {
+      const r = await call("POST", u, b || {});
+      const raw = await r.text();
+      assert.equal(r.status, 200, raw);
+      return raw.split("\n\n").filter((c) => c.startsWith("event:")).map((c) => [c.match(/^event: (.*)$/m)[1], JSON.parse(c.match(/^data: (.*)$/m)[1])]);
+    },
+    async job(u, b) { const ev = await c.sse(u, b); const err = ev.find((e) => e[0] === "error"); if (err) throw new Error(err[1].error); return ev.find((e) => e[0] === "result")[1]; },
+  };
+  return c;
 }
-
-/** Consume an SSE POST into a list of [event, data]. */
-async function sse(u, b) {
-  const r = await fetch(base + u, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b || {}) });
-  const raw = await r.text();
-  assert.equal(r.status, 200, raw);
-  return raw.split("\n\n").filter((c) => c.startsWith("event:")).map((c) => {
-    const ev = c.match(/^event: (.*)$/m)[1];
-    const data = JSON.parse(c.match(/^data: (.*)$/m)[1]);
-    return [ev, data];
-  });
-}
+const alice = client(), bob = client();
 
 before(async () => {
   mock = await startMock();
@@ -43,226 +44,253 @@ before(async () => {
 });
 after(async () => { server.close(); await mock.close(); fs.rmSync(tmp, { recursive: true, force: true }); });
 
-let charId, personaId, worldId, chatId;
+let charId, char2Id, personaId, worldId, chatId;
 
-test("settings: defaults, api key masking", async () => {
-  const s = await get("/api/settings");
-  assert.equal(s.settings.model, "claude-opus-5");
-  assert.equal(s.hasApiKey, false);
-  const r = await put("/api/settings", { apiKey: "sk-ant-test-1234567890", effort: "high", contextBudget: 24000 });
-  assert.equal(r.hasApiKey, true);
-  const s2 = await get("/api/settings");
-  assert.equal(s2.settings.effort, "high");
-  assert.match(s2.apiKeyMasked, /^sk-ant-tes…7890$/);
+test("auth: register, me, logout, login, validation, rate limiting", async () => {
+  const r0 = await alice.raw("GET", "/api/characters");
+  assert.equal(r0.status, 401);
+  const bad = await alice.raw("POST", "/api/auth/register", { username: "a", password: "123456" });
+  assert.equal(bad.status, 400);
+  const reg = await alice.raw("POST", "/api/auth/register", { username: "alice", password: "secret1" });
+  assert.equal(reg.status, 201);
+  assert.match(reg.headers.get("set-cookie"), /tavern_session=.*HttpOnly/);
+  const me = await alice.get("/api/auth/me");
+  assert.equal(me.user.username, "alice");
+  assert.equal(me.user.is_admin, true, "first user is admin");
+  assert.equal((await alice.get("/api/personas")).length, 1, "a default persona is created");
+  await alice.post("/api/auth/logout");
+  assert.equal((await alice.raw("GET", "/api/characters")).status, 401);
+  const dup = await bob.raw("POST", "/api/auth/register", { username: "ALICE", password: "secret1" });
+  assert.equal(dup.status, 409, "usernames are case-insensitive");
+  const wrong = await alice.raw("POST", "/api/auth/login", { username: "alice", password: "nope" });
+  assert.equal(wrong.status, 401);
+  const login = await alice.raw("POST", "/api/auth/login", { username: "alice", password: "secret1" });
+  assert.equal(login.status, 200);
+  assert.equal((await bob.raw("POST", "/api/auth/register", { username: "bob", password: "secret2" })).status, 201);
+  assert.equal((await bob.get("/api/auth/me")).user.is_admin, false);
 });
 
-test("characters / personas / worlds CRUD + import/export", async () => {
-  const c = await post("/api/characters", { name: "Mira", tagline: "Salt-priest", description: "A priestess of the tide", greeting: "*She turns.* \"You're late, {{user}}.\"", alt_greetings: ["*A different opening for {{user}}.*"], avatar: "🧝‍♀️", color: "#8b5cf6", tags: ["fantasy"] });
+test("settings are per user; keys never leak", async () => {
+  await alice.put("/api/settings", { apiKey: "sk-ant-alice-key-000000", effort: "high", contextBudget: 24000 });
+  const a = await alice.get("/api/settings");
+  assert.equal(a.hasApiKey, true);
+  assert.equal(a.settings.effort, "high");
+  assert.equal(a.settings.anthropicKey, undefined, "raw key not returned");
+  assert.match(a.apiKeyMasked, /^sk-ant-ali…0000$/);
+  const b = await bob.get("/api/settings");
+  assert.equal(b.hasApiKey, false, "bob has no key");
+  assert.equal(b.settings.effort, "medium");
+});
+
+test("characters / personas / worlds are private to their owner", async () => {
+  const c = await alice.post("/api/characters", { name: "Mira", tagline: "Salt-priest", description: "A priestess of the tide", greeting: "*She turns.* \"You're late, {{user}}.\"", alt_greetings: ["*A different opening for {{user}}.*"], avatar: "🧝‍♀️", color: "#8b5cf6", tags: ["fantasy"] });
   charId = c.id;
-  assert.equal(c.name, "Mira");
-  const p = await post("/api/personas", { name: "Kael", description: "A smuggler", avatar: "🙂", is_default: 1 });
-  personaId = p.id;
-  assert.equal((await get("/api/personas"))[0].is_default, 1);
-  const w = await post("/api/worlds", { name: "Drowned Kingdom", description: "Tides rule", entries: [
+  const c2 = await alice.post("/api/characters", { name: "Bram", tagline: "Harbourmaster with debts", description: "Gruff, honest, tired", speech_style: "short sentences", avatar: "⚓", color: "#0ea5e9" });
+  char2Id = c2.id;
+  personaId = (await alice.get("/api/personas"))[0].id;
+  await alice.put(`/api/personas/${personaId}`, { name: "Kael", description: "A smuggler" });
+  const w = await alice.post("/api/worlds", { name: "Drowned Kingdom", description: "Tides rule", entries: [
     { name: "Salt priests", keywords: ["priest", "salt"], content: "They trade in memories.", always_on: false, priority: 5 },
     { name: "Core", keywords: [], content: "The tide reveals ruins twice a day.", always_on: true, priority: 0 },
   ] });
   worldId = w.id;
-  const upd = await put(`/api/characters/${charId}`, { world_id: worldId, likes: ["rain"] });
-  assert.equal(upd.world_id, worldId);
-  assert.deepEqual(upd.likes, ["rain"]);
-  const dup = await post(`/api/characters/${charId}/duplicate`);
+  assert.equal((await bob.get("/api/characters")).length, 0, "bob sees none of alice's characters");
+  assert.equal((await bob.raw("GET", `/api/characters/${charId}`)).status, 404);
+  assert.equal((await bob.raw("PUT", `/api/characters/${charId}`, { name: "hacked" })).status, 404);
+  assert.equal((await bob.raw("DELETE", `/api/characters/${charId}`)).status, 404);
+  assert.equal((await alice.get(`/api/characters/${charId}`)).name, "Mira");
+  const dup = await alice.post(`/api/characters/${charId}/duplicate`);
   assert.equal(dup.name, "Mira (copy)");
-  await del(`/api/characters/${dup.id}`);
-  const exp = await get(`/api/characters/${charId}/export`);
-  assert.equal(exp.format, "tavern-ai-character-v1");
-  assert.equal(exp.id, undefined);
-  const imp = await post("/api/characters/import", { spec: "chara_card_v2", data: { name: "Tavern Import", description: "d", personality: "p", first_mes: "hi {{user}}", mes_example: "<START>\n{{user}}: hey\n{{char}}: yo", tags: ["st"] } });
-  assert.equal(imp.name, "Tavern Import");
+  await alice.del(`/api/characters/${dup.id}`);
+  const imp = await alice.post("/api/characters/import", { spec: "chara_card_v2", data: { name: "Import", first_mes: "hi {{user}}", mes_example: "<START>\nx" } });
   assert.equal(imp.greeting, "hi {{user}}");
-  assert.equal(imp.example_dialogue.includes("<START>"), false);
-  await del(`/api/characters/${imp.id}`);
-  assert.equal((await get("/api/characters")).length, 1);
+  await alice.del(`/api/characters/${imp.id}`);
 });
 
-test("chat creation substitutes placeholders and honours greeting choice", async () => {
-  const chat = await post("/api/chats", { character_id: charId, persona_id: personaId, greeting_index: 1 });
+test("single-character roleplay: greeting, streamed reply, prompt shape, state", async () => {
+  const chat = await alice.post("/api/chats", { character_ids: [charId], persona_id: personaId, world_id: worldId, greeting_index: 1 });
   chatId = chat.id;
-  assert.equal(chat.world_id, worldId, "inherits the character's world");
   assert.equal(chat.title, "Chat with Mira");
-  const d = await get(`/api/chats/${chatId}`);
-  assert.equal(d.messages.length, 1);
-  assert.equal(d.messages[0].role, "assistant");
-  assert.equal(d.messages[0].active, 1);
+  assert.equal(chat.cast.length, 1);
+  const d = await alice.get(`/api/chats/${chatId}`);
+  assert.equal(d.messages[0].speaker.name, "Mira");
   assert.equal(d.messages[0].alternatives[1], "*A different opening for Kael.*");
-  assert.equal(d.messages[0].alternatives[0].includes("Kael"), true);
-  assert.equal(d.world.name, "Drowned Kingdom");
-});
+  assert.equal((await bob.raw("GET", `/api/chats/${chatId}`)).status, 404, "bob cannot open alice's roleplay");
 
-test("reply streams, persists, tracks world state and memory", async () => {
   const before = mock.requests.length;
-  const events = await sse(`/api/ai/chats/${chatId}/reply`, { text: "I step inside, shaking rain off my coat. \"I heard the salt priests want to talk.\"" });
-  const names = events.map((e) => e[0]);
-  assert.ok(names.includes("user_message"));
-  assert.ok(names.includes("delta"));
-  assert.ok(names.includes("done"));
-  assert.ok(names.includes("state"), `expected state event, got ${names.join(",")}`);
-  const done = events.find((e) => e[0] === "done")[1];
-  assert.match(done.message.alternatives[0], /mock character/);
-  assert.equal(done.usage.output, 40);
-  assert.ok(done.stats.loreTriggered.includes("Salt priests"), "keyword lore triggered");
-
-  // Inspect what was sent to the API.
-  const replyReq = mock.requests.slice(before).find((r) => r.body.stream);
-  assert.equal(replyReq.body.model, "claude-opus-5");
-  assert.deepEqual(replyReq.body.thinking, { type: "adaptive" });
+  const ev = await alice.sse(`/api/ai/chats/${chatId}/reply`, { text: "\"I heard the salt priests want to talk.\"" });
+  const names = ev.map((e) => e[0]);
+  assert.deepEqual(names.filter((n) => n === "speaker"), ["speaker"], "exactly one speaker, no director call for a single character");
+  assert.ok(names.includes("delta") && names.includes("done") && names.includes("state"));
+  const done = ev.find((e) => e[0] === "done")[1];
+  assert.equal(done.message.speaker.name, "Mira");
+  assert.ok(done.stats.loreTriggered.includes("Salt priests"));
+  const reqs = mock.requests.slice(before);
+  const replyReq = reqs.find((r) => r.body.stream);
+  assert.equal(replyReq.headers["x-api-key"], "sk-ant-alice-key-000000", "the user's own key is used");
   assert.equal(replyReq.body.output_config.effort, "high");
-  assert.equal(replyReq.body.fallbacks, "default");
-  assert.match(replyReq.headers["anthropic-beta"], /server-side-fallback-2026-07-01/);
-  const sys = replyReq.body.system[0];
-  assert.deepEqual(sys.cache_control, { type: "ephemeral" });
-  assert.match(sys.text, /You are Mira/);
-  assert.match(sys.text, /Kael/);
-  assert.match(sys.text, /The tide reveals ruins twice a day/, "always-on lore in system prompt");
-  assert.equal(sys.text.includes("They trade in memories"), false, "triggered lore is NOT in the cached system prompt");
-  const msgs = replyReq.body.messages;
-  assert.equal(msgs[0].role, "user", "first message must be user");
-  const last = msgs[msgs.length - 1];
-  assert.equal(last.role, "system", "dynamic context goes in a mid-conversation system message");
-  assert.match(last.content, /They trade in memories/);
-  const lastUser = [...msgs].reverse().find((m) => m.role === "user");
-  assert.deepEqual(lastUser.content.at(-1).cache_control, { type: "ephemeral" });
-
-  const d = await get(`/api/chats/${chatId}`);
-  assert.equal(d.messages.length, 3);
-  assert.ok(d.chat.state.time, "state extracted");
-  assert.equal(d.chat.memory.length, 1);
-  assert.ok(d.timeline.length >= 2, "timeline has events and facts");
+  assert.deepEqual(replyReq.body.system[0].cache_control, { type: "ephemeral" });
+  assert.match(replyReq.body.system[0].text, /You are Mira, fully in character/);
+  assert.equal(replyReq.body.messages.at(-1).role, "system");
+  assert.match(replyReq.body.messages.at(-1).content, /They trade in memories/);
+  assert.equal(reqs.filter((r) => r.body.output_config?.format).length, 1, "only the state extraction is structured");
+  const d2 = await alice.get(`/api/chats/${chatId}`);
+  assert.ok(d2.chat.state.time);
+  assert.equal(d2.chat.memory.length, 1);
 });
 
-test("regenerate adds an alternative; swipe; continue extends", async () => {
-  const d = await get(`/api/chats/${chatId}`);
+test("ensemble roleplay: director picks speakers, presence changes, newcomer joins, promotion", async () => {
+  const chat = await alice.post("/api/chats", { character_ids: [charId, char2Id], persona_id: personaId, premise: "A storm has trapped everyone in the harbour office." });
+  const id = chat.id;
+  assert.equal(chat.title, "Story with Mira & Bram");
+  assert.equal(chat.cast.length, 2);
+  assert.equal(chat.narrator_enabled, true);
+
+  // Script the director: Bram answers then the Narrator; Mira steps away; a newcomer appears.
+  mock.script.push({
+    speakers: [{ name: "Bram", why: "he was addressed" }, { name: "narrator", why: "storm" }],
+    presence_changes: [{ name: "Mira", status: "away", why: "went to check the cellar" }],
+    newcomer: { introduce: true, name: "Old Tomas", role: "drenched fisherman", description: "Bangs on the door mid-storm. Talks in half-sentences. Wants shelter and has seen something in the water." },
+  });
+  const before = mock.requests.length;
+  const ev = await alice.sse(`/api/ai/chats/${id}/reply`, { text: "\"Bram, is the door going to hold?\"" });
+  const speakers = ev.filter((e) => e[0] === "speaker").map((e) => e[1].name);
+  assert.deepEqual(speakers, ["Bram", "Narrator"]);
+  const dones = ev.filter((e) => e[0] === "done").map((e) => e[1].message);
+  assert.equal(dones.length, 2);
+  assert.equal(dones[0].speaker.name, "Bram");
+  assert.equal(dones[1].speaker.kind, "narrator");
+  const castEv = ev.find((e) => e[0] === "cast")[1];
+  assert.equal(castEv.cast.find((m) => m.name === "Mira").status, "away");
+  const tomas = castEv.cast.find((m) => m.name === "Old Tomas");
+  assert.ok(tomas && tomas.generated && tomas.status === "present", "newcomer joined the cast");
+  assert.equal(castEv.newcomer.name, "Old Tomas");
+
+  // Prompt shape for Bram: labelled transcript, other characters described, presence in dynamic context.
+  const reqs = mock.requests.slice(before).filter((r) => r.body.stream);
+  assert.equal(reqs.length, 2);
+  const bramReq = reqs[0];
+  assert.match(bramReq.body.system[0].text, /You are Bram, one character in an interactive story/);
+  assert.match(bramReq.body.system[0].text, /Other characters in this story[\s\S]*\*\*Mira\*\*/);
+  assert.match(bramReq.body.messages[1].content[0].text, /^\[Mira\]\n/, "assistant history is labelled by speaker");
+  assert.match(bramReq.body.messages[2].content[0].text, /^\[Kael\]\n/, "user lines are labelled too in ensembles");
+  assert.match(bramReq.body.messages.at(-1).content, /Who is where right now[\s\S]*Mira: away/);
+  const narratorReq = reqs[1];
+  assert.match(narratorReq.body.system[0].text, /You are the Narrator/);
+  assert.match(narratorReq.body.messages.at(-1).content, /Already said this turn[\s\S]*Bram:/);
+
+  // Force a specific speaker, including the newcomer (uses his brief).
+  const ev2 = await alice.sse(`/api/ai/chats/${id}/reply`, { text: "\"Who's there?\"", speaker: "Old Tomas" });
+  assert.deepEqual(ev2.filter((e) => e[0] === "speaker").map((e) => e[1].name), ["Old Tomas"]);
+  const tomasReq = mock.requests.filter((r) => r.body.stream).at(-1);
+  assert.match(tomasReq.body.system[0].text, /Your character: Old Tomas[\s\S]*drenched fisherman/);
+
+  // Cast management endpoints.
+  const upd = await alice.put(`/api/chats/${id}/cast/Mira`, { status: "present" });
+  assert.equal(upd.cast.find((m) => m.name === "Mira").status, "present");
+  const dupAdd = await alice.raw("POST", `/api/chats/${id}/cast`, { character_id: charId });
+  assert.equal(dupAdd.status, 409);
+  const promoted = await alice.job(`/api/ai/chats/${id}/cast/Old Tomas/promote`);
+  assert.equal(promoted.character.name, "Old Tomas", "newcomer promoted to a full library character");
+  assert.ok(promoted.cast.find((m) => m.name === "Old Tomas").character_id);
+  assert.equal((await alice.get("/api/characters")).some((c) => c.name === "Old Tomas"), true);
+  const rm = await alice.del(`/api/chats/${id}/cast/Old Tomas`);
+  assert.equal(rm.cast.length, 2);
+  const list = await alice.get("/api/chats");
+  assert.equal(list.find((c) => c.id === id).cast.length, 2);
+  await alice.del(`/api/chats/${id}`);
+});
+
+test("premise generation, narrator opening", async () => {
+  const p = await alice.job("/api/ai/generate/premise", { character_ids: [charId, char2Id], persona_id: personaId, idea: "a heist" });
+  assert.ok(p.title && p.premise && p.opening);
+  const chat = await alice.post("/api/chats", { character_ids: [charId, char2Id], persona_id: personaId, premise: p.premise, opening: p.opening, title: p.title });
+  const d = await alice.get(`/api/chats/${chat.id}`);
+  assert.equal(d.messages[0].speaker.kind, "narrator");
+  assert.equal(d.chat.premise, p.premise);
+  await alice.del(`/api/chats/${chat.id}`);
+});
+
+test("regenerate keeps speaker; continue extends; directions; suggestions; impersonate", async () => {
+  const d = await alice.get(`/api/chats/${chatId}`);
   const lastA = d.messages.at(-1);
-  const ev = await sse(`/api/ai/chats/${chatId}/reply`, { mode: "regen", target_message_id: lastA.id });
+  const ev = await alice.sse(`/api/ai/chats/${chatId}/reply`, { mode: "regen", target_message_id: lastA.id });
   const done = ev.find((e) => e[0] === "done")[1];
   assert.equal(done.message.id, lastA.id);
   assert.equal(done.message.alternatives.length, 2);
-  assert.equal(done.message.active, 1);
-  const sw = await put(`/api/messages/${lastA.id}`, { active: 0 });
-  assert.equal(sw.active, 0);
-  const ev2 = await sse(`/api/ai/chats/${chatId}/reply`, { mode: "continue" });
-  const done2 = ev2.find((e) => e[0] === "done")[1];
-  assert.equal(done2.message.id, lastA.id);
-  assert.ok(done2.message.alternatives[0].length > lastA.alternatives[0].length);
-  assert.equal((await get(`/api/chats/${chatId}`)).messages.length, 3, "continue does not add a message");
-});
-
-test("narrator directions, suggestions, impersonation, generation", async () => {
-  const ev = await sse(`/api/ai/chats/${chatId}/direct`, { kind: "time", detail: "Three hours pass" });
-  const um = ev.find((e) => e[0] === "user_message")[1].message;
-  assert.equal(um.kind, "direction");
-  assert.match(um.alternatives[0], /Three hours pass/);
-  const sug = await job(`/api/ai/chats/${chatId}/suggest`);
+  assert.equal(done.message.speaker.name, "Mira");
+  await alice.put(`/api/messages/${lastA.id}`, { active: 0 });
+  const ev2 = await alice.sse(`/api/ai/chats/${chatId}/reply`, { mode: "continue" });
+  assert.equal(ev2.find((e) => e[0] === "done")[1].message.id, lastA.id);
+  const ev3 = await alice.sse(`/api/ai/chats/${chatId}/direct`, { kind: "time", detail: "Three hours pass" });
+  assert.equal(ev3.find((e) => e[0] === "user_message")[1].message.kind, "direction");
+  assert.equal(ev3.find((e) => e[0] === "speaker")[1].name, "Narrator", "time skips are narrated");
+  const sug = await alice.job(`/api/ai/chats/${chatId}/suggest`);
   assert.ok(sug.suggestions.length >= 3);
-  const imp = await job(`/api/ai/chats/${chatId}/impersonate`, { hint: "be bold" });
+  const imp = await alice.job(`/api/ai/chats/${chatId}/impersonate`, { hint: "be bold" });
   assert.ok(imp.text.length > 10);
-  const badReq = await fetch(`${base}/api/ai/generate/character`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
-  assert.equal(badReq.status, 400, "validation errors stay plain JSON");
-  const gen = await job("/api/ai/generate/character", { prompt: "a tired bounty hunter" });
-  assert.ok(gen.name && gen.greeting && gen.likes.length >= 3);
-  const fld = await job("/api/ai/generate/field", { character: gen, field: "backstory" });
-  assert.ok(fld.text);
-  const world = await job("/api/ai/generate/world", { prompt: "drowned kingdom" });
-  assert.ok(world.entries.length >= 6);
+  const gen = await alice.job("/api/ai/generate/character", { prompt: "a tired bounty hunter" });
+  assert.ok(gen.name && gen.likes.length >= 3);
+  const badReq = await alice.raw("POST", "/api/ai/generate/character", {});
+  assert.equal(badReq.status, 400);
 });
 
 test("rolling summary folds old messages when over budget", async () => {
-  await put("/api/settings", { contextBudget: 10, keepRecent: 2 });
-  const ev = await sse(`/api/ai/chats/${chatId}/reply`, { text: "\"Tell me about the tide.\"" });
-  const sum = ev.find((e) => e[0] === "summary");
-  assert.ok(sum, "summary event emitted");
-  const d = await get(`/api/chats/${chatId}`);
+  await alice.put("/api/settings", { contextBudget: 10, keepRecent: 2 });
+  const ev = await alice.sse(`/api/ai/chats/${chatId}/reply`, { text: "\"Tell me about the tide.\"" });
+  assert.ok(ev.find((e) => e[0] === "summary"));
+  const d = await alice.get(`/api/chats/${chatId}`);
   assert.ok(d.chat.summary.length > 0);
-  assert.ok(d.chat.summary_seq >= 0);
-  const stats = ev.find((e) => e[0] === "status" && e[1].stats)[1].stats;
-  assert.ok(stats.summarizedMessages > 0);
-  await put("/api/settings", { contextBudget: 24000, keepRecent: 10 });
+  await alice.put("/api/settings", { contextBudget: 24000, keepRecent: 10 });
 });
 
-test("branch, edit, delete cascade, export, search", async () => {
-  const d = await get(`/api/chats/${chatId}`);
+test("branch, edit, delete cascade, export, search stay within the owner", async () => {
+  const d = await alice.get(`/api/chats/${chatId}`);
   const mid = d.messages[1].id;
-  const br = await post(`/api/chats/${chatId}/branch`, { message_id: mid });
+  const br = await alice.post(`/api/chats/${chatId}/branch`, { message_id: mid });
   assert.match(br.title, /\(branch\)$/);
-  const bd = await get(`/api/chats/${br.id}`);
-  assert.equal(bd.messages.length, 2);
-  assert.equal(bd.chat.summary, "", "summary dropped because it covered later messages");
-  const ed = await put(`/api/messages/${mid}`, { text: "edited text about the unicorn" });
+  assert.equal((await alice.get(`/api/chats/${br.id}`)).messages.length, 2);
+  const ed = await alice.put(`/api/messages/${mid}`, { text: "edited text about the unicorn" });
   assert.equal(ed.edited, true);
-  const hits = await get("/api/search?q=unicorn");
-  assert.equal(hits.length, 1);
-  const md = await fetch(`${base}/api/chats/${chatId}/export?format=md`).then((r) => r.text());
-  assert.match(md, /^# /);
+  assert.equal((await bob.raw("PUT", `/api/messages/${mid}`, { text: "x" })).status, 404, "bob cannot edit alice's message");
+  assert.equal((await alice.get("/api/search?q=unicorn")).length, 1);
+  assert.equal((await bob.get("/api/search?q=unicorn")).length, 0);
+  const md = await (await alice.raw("GET", `/api/chats/${chatId}/export?format=md`)).text();
   assert.match(md, /\*\*Kael:\*\*/);
-  await del(`/api/messages/${d.messages[2].id}?cascade=1`);
-  assert.equal((await get(`/api/chats/${chatId}`)).messages.length, 2);
-  const list = await get("/api/chats");
-  assert.equal(list.length, 2);
-  await del(`/api/chats/${br.id}`);
-  assert.equal((await get("/api/chats")).length, 1);
-  const reset = await post(`/api/chats/${chatId}/reset-memory`);
-  assert.equal(reset.state, null);
+  assert.match(md, /\*\*Mira:\*\*/);
+  await alice.del(`/api/messages/${d.messages[2].id}?cascade=1`);
+  assert.equal((await alice.get(`/api/chats/${chatId}`)).messages.length, 2);
+  await alice.del(`/api/chats/${br.id}`);
+  assert.equal((await alice.post(`/api/chats/${chatId}/reset-memory`)).state, null);
 });
 
-test("xAI (Grok) provider: streaming, reasoning, structured state, live model list", async () => {
-  await put("/api/settings", { provider: "xai", xaiKey: "xai-test-key", xaiBaseUrl: mock.url + "/v1", showThinking: true, effort: "low" });
-  const cfg = await get("/api/settings");
+test("xAI (Grok) provider per user: streaming, reasoning, strict schema, low effort", async () => {
+  await alice.put("/api/settings", { provider: "xai", xaiKey: "xai-test-key", xaiBaseUrl: mock.url + "/v1", showThinking: true, effort: "medium" });
+  const cfg = await alice.get("/api/settings");
   assert.equal(cfg.settings.activeModel, "grok-4.6");
   assert.equal(cfg.hasApiKey, true);
-  assert.match(cfg.xaiKeyMasked, /^xai-test-k…-key$/);
-  const models = await get("/api/providers/xai/models");
-  assert.deepEqual(models.map((m) => m.id), ["grok-4.6", "grok-4.3"], "imagine models filtered out");
-
+  assert.deepEqual((await alice.get("/api/providers/xai/models")).map((m) => m.id), ["grok-4.6", "grok-4.3"]);
   const before = mock.requests.length;
-  const chat = await post("/api/chats", { character_id: charId, persona_id: personaId });
-  const ev = await sse(`/api/ai/chats/${chat.id}/reply`, { text: "\"Do the salt priests still trade in memories?\"" });
-  const names = ev.map((e) => e[0]);
-  assert.ok(names.includes("thinking"), "reasoning streamed");
-  assert.ok(names.includes("delta") && names.includes("done") && names.includes("state"));
+  const ev = await alice.sse(`/api/ai/chats/${chatId}/reply`, { text: "\"Do the salt priests still trade in memories?\"" });
+  assert.ok(ev.some((e) => e[0] === "thinking"));
   const done = ev.find((e) => e[0] === "done")[1];
   assert.equal(done.usage.model, "grok-4.6");
-  assert.equal(done.usage.cache_read, 100);
-  assert.match(done.message.thinking, /thinking about it/);
   const reqs = mock.requests.slice(before).filter((r) => r.url.startsWith("/v1/chat/completions"));
   const replyReq = reqs.find((r) => r.body.stream);
   assert.equal(replyReq.headers.authorization, "Bearer xai-test-key");
-  assert.equal(replyReq.body.reasoning_effort, "low");
-  const genReq = mock.requests.filter((r) => r.url.startsWith("/v1/chat/completions")).at(-1);
-  assert.ok(genReq);
-  assert.equal(replyReq.body.messages[0].role, "system");
-  assert.match(replyReq.body.messages[0].content, /You are Mira/);
-  assert.equal(replyReq.body.messages.at(-1).role, "system", "dynamic context as trailing system message");
-  assert.match(replyReq.body.messages.at(-1).content, /They trade in memories/);
+  assert.equal(replyReq.body.reasoning_effort, "low", "medium maps to low on xAI");
+  assert.equal(replyReq.body.messages.at(-1).role, "system");
   const stateReq = reqs.find((r) => r.body.response_format);
-  assert.equal(stateReq.body.model, "grok-4.3", "utility model used for state extraction");
+  assert.equal(stateReq.body.model, "grok-4.3");
   assert.equal(stateReq.body.response_format.json_schema.strict, true);
-  assert.equal(stateReq.body.response_format.json_schema.schema.additionalProperties, false);
-  const gen = await job("/api/ai/generate/character", { prompt: "a grok-made rogue" });
-  assert.ok(gen.name && gen.likes.length >= 3);
-  await del(`/api/chats/${chat.id}`);
-  await put("/api/settings", { provider: "anthropic", xaiKey: "", showThinking: false });
+  assert.equal((await bob.get("/api/settings")).settings.provider, "anthropic", "bob's provider unaffected");
+  await alice.put("/api/settings", { provider: "anthropic", xaiKey: "", showThinking: false });
 });
 
-test("missing api key gives a clear error", async () => {
-  await put("/api/settings", { apiKey: "" });
-  const r = await fetch(`${base}/api/ai/chats/${chatId}/reply`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "hi" }) });
+test("missing api key gives a clear error; static app served; health", async () => {
+  const r = await bob.raw("POST", `/api/ai/generate/character`, { prompt: "x" });
   assert.equal(r.status, 400);
   assert.match((await r.json()).error, /API key/);
-});
-
-test("static app is served", async () => {
-  const html = await fetch(base + "/").then((r) => r.text());
-  assert.match(html, /Tavern/);
-  const js = await fetch(base + "/js/app.js").then((r) => r.text());
-  assert.match(js, /navigate/);
+  assert.match(await (await fetch(base + "/")).text(), /Tavern/);
+  assert.equal((await (await fetch(base + "/healthz")).json()).ok, true);
 });

@@ -2,9 +2,10 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Tavern — AI Roleplay Studio</title>
-  <meta name="description" content="Create characters, build worlds, and live inside stories that remember everything." />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+  <title>Tavern — AI Roleplay</title>
+  <meta name="description" content="Roleplay with casts of AI characters that remember everything." />
+  <meta name="theme-color" content="#0e0f13" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎭</text></svg>" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -13,11 +14,11 @@
 </head>
 <body>
   <div id="app" class="app">
-    <aside id="sidebar" class="sidebar"></aside>
+    <header id="topbar" class="topbar"></header>
     <main id="main" class="main"></main>
     <aside id="panel" class="panel"></aside>
+    <nav id="tabbar" class="tabbar"></nav>
   </div>
-  <button id="menu-fab" class="btn icon only-mobile" title="Menu" aria-label="Open menu">☰</button>
   <div id="overlay"></div>
   <div id="toasts"></div>
   <script type="module" src="/js/app.js"></script>

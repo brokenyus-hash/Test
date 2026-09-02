@@ -1,21 +1,23 @@
-// AI endpoints: SSE streaming replies + generation helpers.
+// AI endpoints: SSE turns + long-running generation jobs (all per signed-in user).
 import { Router } from "express";
 import * as db from "../db.js";
-import { hasCredentials, describeError } from "../provider.js";
 import { settings } from "../claude.js";
+import { hasCredentials, describeError } from "../provider.js";
+import { requireUser } from "../auth.js";
 import * as ai from "../ai.js";
 
 export const aiRoutes = Router();
+aiRoutes.use(requireUser);
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
-const needKey = (res) => {
-  const s = settings();
-  if (hasCredentials(s.provider)) return false;
-  res.status(400).json({ error: `No API key configured for ${s.provider === "xai" ? "xAI (Grok)" : "Anthropic (Claude)"}. Open Settings and add one.` });
+const needKey = (req, res) => {
+  const s = settings(req.user);
+  if (hasCredentials(s)) return false;
+  res.status(400).json({ error: `No API key for ${s.provider === "xai" ? "xAI (Grok)" : "Anthropic (Claude)"}. Add one in Settings.`, code: "no_key" });
   return true;
 };
 
-/** Server-Sent Events over a POST body. */
+/** Server-Sent Events over a POST body, with keep-alive pings. */
 function sse(res) {
   res.status(200);
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
@@ -23,67 +25,52 @@ function sse(res) {
   res.setHeader("Connection", "keep-alive");
   res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders?.();
-  const emit = (event, data) => {
-    if (res.writableEnded) return;
-    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-  };
+  const emit = (event, data) => { if (!res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
   const ping = setInterval(() => { if (!res.writableEnded) res.write(": ping\n\n"); }, 15000);
   const end = () => { clearInterval(ping); if (!res.writableEnded) res.end(); };
   return { emit, end };
 }
 
-// POST /api/ai/chats/:id/reply  { text?, mode?: reply|regen|continue, target_message_id?, instruction?, kind? }
-aiRoutes.post("/chats/:id/reply", wrap(async (req, res) => {
-  if (needKey(res)) return;
-  const chat = db.chats.get(req.params.id);
-  if (!chat) return res.status(404).json({ error: "Chat not found" });
-  const { text, mode = "reply", target_message_id = null, instruction = null, kind } = req.body || {};
+const abortOnClose = (req, res) => {
+  const ac = new AbortController();
+  res.on("close", () => { if (!res.writableFinished) ac.abort(); });
+  return ac.signal;
+};
 
+// POST /api/ai/chats/:id/reply  { text?, mode?: reply|regen|continue, target_message_id?, instruction?, kind?, speaker? }
+aiRoutes.post("/chats/:id/reply", wrap(async (req, res) => {
+  if (needKey(req, res)) return;
+  const chat = db.chats.get(req.params.id, req.user.id);
+  if (!chat) return res.status(404).json({ error: "Roleplay not found" });
+  const { text, mode = "reply", target_message_id = null, instruction = null, kind, speaker = null } = req.body || {};
   let userMessage = null;
-  if (mode === "reply" && text && text.trim()) {
-    userMessage = db.messages.add(chat.id, { role: "user", text: text.trim(), kind });
-  }
+  if (mode === "reply" && text && text.trim()) userMessage = db.messages.add(chat.id, { role: "user", text: text.trim(), kind });
   const { emit, end } = sse(res);
   if (userMessage) emit("user_message", { message: userMessage });
-  const ac = new AbortController();
-  // Abort the model call only if the client goes away before we finish writing.
-  res.on("close", () => { if (!res.writableFinished) ac.abort(); });
-  try {
-    await ai.streamReply({ chatId: chat.id, emit, signal: ac.signal, mode, targetMessageId: target_message_id, instruction });
-  } catch (e) {
-    console.error("[reply]", e);
-    emit("error", { error: describeError(e) });
-  } finally {
-    end();
-  }
+  try { await ai.runTurn({ chatId: chat.id, user: req.user, emit, signal: abortOnClose(req, res), mode, targetMessageId: target_message_id, instruction, speakerName: speaker }); }
+  catch (e) { console.error("[reply]", e); emit("error", { error: describeError(e) }); }
+  finally { end(); }
 }));
 
-// Narrator tools: time skip / random event / scene change / narration -> creates a direction message and streams reply
+// Narrator tools: time skip / twist / scene change / narration
 aiRoutes.post("/chats/:id/direct", wrap(async (req, res) => {
-  if (needKey(res)) return;
-  const chat = db.chats.get(req.params.id);
-  if (!chat) return res.status(404).json({ error: "Chat not found" });
+  if (needKey(req, res)) return;
+  const chat = db.chats.get(req.params.id, req.user.id);
+  if (!chat) return res.status(404).json({ error: "Roleplay not found" });
   const { kind, detail } = req.body || {};
   const direction = ai.narratorDirection(kind, detail);
   if (!direction) return res.status(400).json({ error: "kind required" });
   const m = db.messages.add(chat.id, { role: "user", text: direction, kind: "direction" });
   const { emit, end } = sse(res);
   emit("user_message", { message: m });
-  const ac = new AbortController();
-  // Abort the model call only if the client goes away before we finish writing.
-  res.on("close", () => { if (!res.writableFinished) ac.abort(); });
-  try { await ai.streamReply({ chatId: chat.id, emit, signal: ac.signal }); }
+  try { await ai.runTurn({ chatId: chat.id, user: req.user, emit, signal: abortOnClose(req, res), speakerName: kind === "narrate" || kind === "time" || kind === "scene" ? "Narrator" : null }); }
   catch (e) { emit("error", { error: describeError(e) }); }
   finally { end(); }
 }));
 
-/**
- * Long-running AI jobs answer over SSE too: headers go out immediately and a ping every
- * 15 s keeps proxies (Render/Cloudflare ~100 s idle limit) from cutting the connection.
- * Events: status, result, error. `fn` may throw a { status, message } for validation errors.
- */
+/** Long-running jobs answer over SSE too (status/result/error) so proxies never cut them. */
 const job = (fn) => wrap(async (req, res) => {
-  if (needKey(res)) return;
+  if (needKey(req, res)) return;
   let ready;
   try { ready = await fn.validate?.(req); } catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
   const { emit, end } = sse(res);
@@ -92,38 +79,61 @@ const job = (fn) => wrap(async (req, res) => {
   finally { end(); }
 });
 const bad = (message) => Object.assign(new Error(message), { status: 400 });
+const S = (req) => settings(req.user);
 
-aiRoutes.post("/chats/:id/suggest", job(async (req) => ({ suggestions: await ai.suggestActions(req.params.id) })));
-aiRoutes.post("/chats/:id/impersonate", job(async (req) => ({ text: await ai.impersonate(req.params.id, req.body?.hint) })));
+aiRoutes.post("/chats/:id/suggest", job(async (req) => ({ suggestions: await ai.suggestActions(req.params.id, req.user) })));
+aiRoutes.post("/chats/:id/impersonate", job(async (req) => ({ text: await ai.impersonate(req.params.id, req.user, req.body?.hint) })));
 aiRoutes.post("/chats/:id/summarize", job(async (req, emit) => {
-  const ctx = ai.loadChatContext(req.params.id);
-  ctx.s.contextBudget = 0; // force: summarize everything except the last keepRecent messages
+  const ctx = ai.loadChatContext(req.params.id, req.user);
+  ctx.s.contextBudget = 0;
   const summary = await ai.maybeSummarize({ ...ctx, s: { ...ctx.s, autoSummarize: true } }, emit);
-  return { summary: summary ?? ctx.chat.summary, chat: db.chats.get(req.params.id) };
+  return { summary: summary ?? ctx.chat.summary, chat: db.chats.get(req.params.id, req.user.id) };
 }));
 aiRoutes.post("/chats/:id/refresh-state", job(async (req, emit) => {
-  const ctx = ai.loadChatContext(req.params.id);
+  const ctx = ai.loadChatContext(req.params.id, req.user);
   const msgs = ctx.history;
   const lastA = [...msgs].reverse().find((m) => m.role === "assistant");
   const lastU = [...msgs].reverse().find((m) => m.role === "user" && (!lastA || m.seq < lastA.seq));
   const t = (m) => (m ? m.alternatives?.[m.active ?? 0] ?? "" : "");
-  const r = await ai.extractState({ ...ctx, s: { ...ctx.s, autoState: true } }, t(lastU), t(lastA) || "(no reply yet)", emit);
-  return { state: r.state, memory: r.memory, timeline: db.timeline.list(req.params.id) };
+  const r = await ai.extractState({ ...ctx, s: { ...ctx.s, autoState: true } }, t(lastU), `${lastA?.speaker?.name || ctx.cast[0]?.name || "Narrator"}: ${t(lastA) || "(no reply yet)"}`, emit);
+  return { state: r.state, memory: r.memory, timeline: db.timeline.list(req.params.id), cast: ai.stripCast(ctx.cast) };
 }));
-aiRoutes.post("/chats/:id/title", job(async (req) => ({ title: await ai.autoTitle(req.params.id) })));
+aiRoutes.post("/chats/:id/title", job(async (req) => ({ title: await ai.autoTitle(req.params.id, req.user) })));
 
-// Character / world generation
-const genCharacter = async (req, emit) => {
-  emit("status", { text: "Designing the character…" });
-  return ai.generateCharacter(req.body?.prompt, req.body?.existing);
-};
+// Promote a generated newcomer / bystander into a full character (saved to the library and linked in the cast).
+aiRoutes.post("/chats/:id/cast/:name/promote", job(async (req, emit) => {
+  const ctx = ai.loadChatContext(req.params.id, req.user);
+  const m = ctx.cast.find((x) => x.name.toLowerCase() === req.params.name.toLowerCase());
+  const npc = m || (ctx.chat.state?.present_npcs || []).find((n) => n.name.toLowerCase() === req.params.name.toLowerCase());
+  if (!npc) throw Object.assign(new Error("No such newcomer"), { status: 404 });
+  emit("status", { text: `Writing a full card for ${npc.name}…` });
+  const card = await ai.promoteNpc(ctx.s, { name: npc.name, brief: m?.brief || `${npc.role || ""}. ${npc.disposition || ""}`, context: ctx.chat.summary || ctx.chat.premise || "" });
+  const created = db.characters.create({ ...card, name: npc.name }, req.user.id);
+  const cast = ai.stripCast(ctx.cast);
+  const entry = cast.find((x) => x.name.toLowerCase() === npc.name.toLowerCase());
+  if (entry) { entry.character_id = created.id; entry.generated = false; delete entry.brief; entry.avatar = created.avatar; entry.color = created.color; }
+  else cast.push({ character_id: created.id, name: created.name, status: "present", role: "supporting" });
+  db.chats.update(ctx.chat.id, { cast, narrator_enabled: true }, { touch: false, userId: req.user.id });
+  return { character: created, cast };
+}));
+
+// Generators
+const genCharacter = async (req, emit) => { emit("status", { text: "Designing the character…" }); return ai.generateCharacter(S(req), req.body?.prompt, req.body?.existing); };
 genCharacter.validate = (req) => { if (!req.body?.prompt && !req.body?.existing) throw bad("prompt required"); };
 aiRoutes.post("/generate/character", job(genCharacter));
-
-const genField = async (req) => ({ text: await ai.enhanceField(req.body?.character || {}, req.body.field, req.body?.guidance) });
+const genField = async (req) => ({ text: await ai.enhanceField(S(req), req.body?.character || {}, req.body.field, req.body?.guidance) });
 genField.validate = (req) => { if (!req.body?.field) throw bad("field required"); };
 aiRoutes.post("/generate/field", job(genField));
-
-const genWorld = async (req, emit) => { emit("status", { text: "Building the world…" }); return ai.generateWorld(req.body.prompt); };
+const genWorld = async (req, emit) => { emit("status", { text: "Building the world…" }); return ai.generateWorld(S(req), req.body.prompt); };
 genWorld.validate = (req) => { if (!req.body?.prompt) throw bad("prompt required"); };
 aiRoutes.post("/generate/world", job(genWorld));
+const genPremise = async (req, emit) => {
+  emit("status", { text: "Drafting the story…" });
+  const ids = req.body.character_ids || [];
+  const cast = ids.map((id) => db.characters.get(id, req.user.id)).filter(Boolean).map((c) => ({ name: c.name, character: c }));
+  const persona = req.body.persona_id ? db.personas.get(req.body.persona_id, req.user.id) : null;
+  const world = req.body.world_id ? db.worlds.get(req.body.world_id, req.user.id) : null;
+  return ai.generatePremise(S(req), { cast, persona, world, idea: req.body.idea });
+};
+genPremise.validate = (req) => { if (!Array.isArray(req.body?.character_ids) || !req.body.character_ids.length) throw bad("character_ids required"); };
+aiRoutes.post("/generate/premise", job(genPremise));
