@@ -1,4 +1,10 @@
 // DOM helpers, modals, toasts, and story-text rendering.
+
+// Let `el.append(a, cond ? b : null)` skip null/false children instead of printing "null".
+const nativeAppend = Element.prototype.append;
+Element.prototype.append = function (...kids) {
+  return nativeAppend.apply(this, kids.flat(Infinity).filter((k) => k != null && k !== false));
+};
 export const $ = (sel, root = document) => root.querySelector(sel);
 export const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
