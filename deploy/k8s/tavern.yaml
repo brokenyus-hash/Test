@@ -1,0 +1,97 @@
+# Tavern on Kubernetes without a container registry: an init container clones the
+# repo and installs dependencies onto a host volume, then node:22 runs the server.
+# Apply with deploy/hetzner-k8s.sh (creates the secret + picks Ingress or NodePort).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tavern
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tavern-config
+  namespace: tavern
+data:
+  REPO_URL: "https://github.com/brokenyus-hash/Test.git"
+  REPO_BRANCH: "claude/ai-roleplay-app-characters-w0a4bb"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tavern
+  namespace: tavern
+  labels: { app: tavern }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }   # SQLite: one writer at a time
+  selector:
+    matchLabels: { app: tavern }
+  template:
+    metadata:
+      labels: { app: tavern }
+    spec:
+      initContainers:
+        - name: fetch
+          image: node:22-alpine
+          envFrom:
+            - configMapRef: { name: tavern-config }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              apk add --no-cache git >/dev/null
+              if [ -d /app/.git ]; then
+                git -C /app remote set-url origin "$REPO_URL"
+                git -C /app fetch --depth 1 origin "$REPO_BRANCH"
+                git -C /app reset --hard FETCH_HEAD
+              else
+                rm -rf /app/* /app/.[!.]* 2>/dev/null || true
+                git clone --depth 1 -b "$REPO_BRANCH" "$REPO_URL" /app
+              fi
+              cd /app && npm ci --omit=dev --no-audit --no-fund
+              echo "Tavern code ready: $(git -C /app rev-parse --short HEAD)"
+          volumeMounts:
+            - { name: app, mountPath: /app }
+      containers:
+        - name: tavern
+          image: node:22-alpine
+          workingDir: /app
+          command: ["node", "--no-warnings=ExperimentalWarning", "server/index.js"]
+          env:
+            - { name: PORT, value: "3000" }
+            - { name: DATA_DIR, value: "/data" }
+            - { name: NODE_ENV, value: "production" }
+          envFrom:
+            - secretRef: { name: tavern-secrets }
+          ports:
+            - { name: http, containerPort: 3000 }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 1Gi }
+          volumeMounts:
+            - { name: app, mountPath: /app }
+            - { name: data, mountPath: /data }
+      volumes:
+        # Single-node dev server: plain host directories, no StorageClass needed.
+        - name: app
+          hostPath: { path: /var/lib/tavern/app, type: DirectoryOrCreate }
+        - name: data
+          hostPath: { path: /var/lib/tavern/data, type: DirectoryOrCreate }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tavern
+  namespace: tavern
+spec:
+  selector: { app: tavern }
+  ports:
+    - { name: http, port: 80, targetPort: http }

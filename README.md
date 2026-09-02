@@ -79,6 +79,15 @@ The app needs a small Node server (it keeps your chats in SQLite and talks to th
 
 **Render (easiest, one click):** the repo contains `render.yaml`. In the Render dashboard choose *New → Blueprint*, pick this repo, and fill in `XAI_API_KEY` and/or `ANTHROPIC_API_KEY` plus an `APP_PASSWORD`. Render builds it, attaches a 1 GB persistent disk for the database and gives you a public URL.
 
+**Your own server with Kubernetes (k3s, microk8s, kubeadm), e.g. a Hetzner box:** one command, run on the server as root. It needs no registry and no image build: an init container clones this repo and installs packages onto `/var/lib/tavern/app`, and `node:22-alpine` runs it. Chats persist in `/var/lib/tavern/data`.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/brokenyus-hash/Test/claude/ai-roleplay-app-characters-w0a4bb/deploy/hetzner-k8s.sh \
+  | XAI_API_KEY=xai-... APP_PASSWORD=choose-a-password bash
+```
+
+It finds `kubectl` (plain, `k3s kubectl` or `microk8s kubectl`), applies `deploy/k8s/tavern.yaml`, stores the keys in a Secret, and exposes the app through the cluster's Ingress at `http://tavern.<server-ip>.nip.io` (or on NodePort `30080` if there is no ingress controller). Re-run the same command to update. See `deploy/` for the manifests.
+
 **Railway / Fly.io / any Docker host:**
 
 ```bash
@@ -102,7 +111,8 @@ server/
   ai.js         streaming replies, state extraction, summaries, generators
   routes/       api.js (REST)  ai.js (SSE streaming + generation)
 public/         vanilla ES-module SPA (app, chat, editors, ui, api) + CSS
-test/           mock Anthropic API + end-to-end test-suite
+test/           mock Anthropic/xAI API + end-to-end test-suite
+deploy/         Kubernetes manifests + one-command server deploy script
 data/           tavern.sqlite (created on first run; git-ignored)
 ```
 

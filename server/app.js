@@ -10,6 +10,9 @@ export const app = express();
 app.disable("x-powered-by");
 app.use(express.json({ limit: "20mb" }));
 
+// Unauthenticated health check for load balancers / Kubernetes probes.
+app.get("/healthz", (req, res) => res.json({ ok: true }));
+
 // Optional protection for internet-facing deployments: set APP_PASSWORD (and optionally APP_USER).
 if (process.env.APP_PASSWORD) {
   const user = process.env.APP_USER || "tavern";

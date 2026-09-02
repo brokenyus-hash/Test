@@ -1,0 +1,21 @@
+# Applied by deploy/hetzner-k8s.sh when the cluster has an ingress controller.
+# HOST is substituted (default: tavern.<server-ip>.nip.io, which needs no DNS setup).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: tavern
+  namespace: tavern
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"   # long streaming replies
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+spec:
+  rules:
+    - host: "${HOST}"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: tavern
+                port: { name: http }
