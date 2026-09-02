@@ -1,0 +1,87 @@
+# 🎭 Tavern — AI Roleplay Studio
+
+A self-hosted roleplay app that treats a story like a living world. Create characters with real personalities, build worlds with keyword-triggered lore, and play with an AI (Claude) that **remembers everything**: time of day, where you are, who's in the room, how people feel about you, what you're carrying, and which plot threads are still open.
+
+No build step, no external database. Node 22, Express, the official Anthropic SDK and Node's built-in SQLite.
+
+## Quick start
+
+```bash
+npm install
+cp .env.example .env        # optional: put ANTHROPIC_API_KEY here, or paste it in Settings inside the app
+npm start                   # http://localhost:3000
+```
+
+Try it without an API key (canned responses from a local mock of the Messages API):
+
+```bash
+npm run mock   # terminal 1: mock Anthropic API on :3999
+npm run demo   # terminal 2: app pointed at the mock
+```
+
+Run the test-suite (starts the app against the mock, exercises every endpoint, and asserts on the exact prompt sent to the API):
+
+```bash
+npm test
+```
+
+## What it does
+
+### Characters
+- Full character cards: description, personality, appearance, backstory, speech style, likes / dislikes, goals, **secrets that surface through play**, relationships, scenario, greeting + alternative openings, example dialogue, tags, avatar (emoji, URL or uploaded image), accent colour.
+- **✨ AI character creator** – describe a concept, get a complete playable card (structured output, validated against a schema). **Fill in the blanks** completes only what you left empty. Every field has its own **✨ AI** button to rewrite that field with optional guidance.
+- Duplicate, export as JSON, import our JSON or SillyTavern `chara_card_v2/v3` cards.
+
+### Personas
+- Who *you* are in the story. The AI is explicitly forbidden from writing your persona's actions, thoughts or dialogue.
+
+### Worlds & lorebooks
+- Description plus lore entries with **keywords, priority and always-on flags**. Always-on entries live in the (cached) system prompt; keyword entries are injected only when their keywords appear in the recent conversation, with a token budget – so a 100-entry world stays cheap.
+- **✨ AI worldbuilder** generates a whole lorebook from a paragraph.
+
+### The chat
+- Streaming replies with a live typing cursor, optional visible thinking summary.
+- **Regenerate** (keeps every alternative, swipe ‹ › between them), **Continue** an unfinished reply, **Edit**, **Delete** (one or cascade), **Hide** from context, **Bookmark**, **Branch** the story from any message, **Copy**.
+- **💡 Suggest** – 4 genuinely different next moves, each with a tone label. **🪄 Write for me** – the AI drafts your next message in your persona's voice; you edit before sending.
+- Narrator controls: **⏱ Time skip**, **🎲 Twist** (unexpected complication), **🎬 Scene** change, **📣 Narrate** (direct instruction), **🎯 Steer** (one-off instruction attached to your next message), **▶ Continue** the scene without writing anything. `(OOC: …)` notes are answered briefly and the scene continues.
+- **Character chat** mode (the AI *is* the character) or **Narrator / Game Master** mode (the AI runs the whole world and every NPC).
+- Per-chat overrides for persona, world, mode, model, reply length, realism, effort, a **director's standing note** and scenario.
+- Auto-titles, pinning, full-text search across every message, export as JSON or a Markdown transcript.
+
+### The living world (right panel)
+After every reply a second, cheaper structured call updates the world state:
+
+| Tab | Tracks |
+|---|---|
+| 🌍 World | in-world date/time, location, weather, the character's mood, status and current goals, a **relationship meter** (−100…100 with a label and note), NPCs present and their disposition, your inventory, open/progressing/resolved/failed plot threads |
+| 🧠 Memory | durable facts extracted automatically; pin the important ones, delete mistakes, add your own |
+| 📜 Timeline | a running log of what happened, click to jump to the message |
+| 📚 Story | the rolling summary (editable) and the director's note |
+
+All of it is fed back into the prompt, so the character never forgets that you owe her money or that it was raining when you left.
+
+### Context management (how it stays coherent for hundreds of messages)
+1. **Stable system prompt** – character, persona, always-on lore, simulation rules and format rules. Byte-identical between turns, marked with `cache_control`, so Anthropic's prompt cache serves it at ~10 % cost.
+2. **Verbatim history** – recent messages, with a cache breakpoint on the last user turn so the whole prefix is reused next turn.
+3. **Rolling summary** – when raw history exceeds the context budget (default 24k tokens), the oldest messages are folded into a continuity summary; the last *N* messages are always kept verbatim. Summaries preserve names, numbers, promises, injuries, items and unresolved threads.
+4. **Dynamic context** – summary, long-term memory, current world state, triggered lore, director's note and any one-off steering instruction are appended *after* the cached prefix as a mid-conversation `system` message (or a tagged text block on models that don't support it), so per-turn changes never invalidate the cache.
+5. Budgets and estimates are shown live under the composer (system / history / summarized / lore triggered).
+
+### Model settings
+Model (Opus 5 by default; Fable 5.1, Sonnet 5, Opus 4.8, Haiku 4.5), effort level, a separate cheaper utility model/effort for state tracking and summaries, max tokens, server-side refusal fallbacks, thinking display, reply length, realism (cinematic / grounded / brutal), point of view and tense.
+
+## Layout
+
+```
+server/
+  index.js      entry (listens)        app.js       express app
+  db.js         SQLite persistence     claude.js    SDK client, model params, structured calls
+  prompt.js     prompt assembly + context management
+  ai.js         streaming replies, state extraction, summaries, generators
+  routes/       api.js (REST)  ai.js (SSE streaming + generation)
+public/         vanilla ES-module SPA (app, chat, editors, ui, api) + CSS
+test/           mock Anthropic API + end-to-end test-suite
+data/           tavern.sqlite (created on first run; git-ignored)
+```
+
+Set `PORT`, `DATA_DIR`, `ANTHROPIC_API_KEY` or `ANTHROPIC_BASE_URL` in the environment as needed.

@@ -1,0 +1,23 @@
+{
+  "name": "tavern-ai-roleplay",
+  "version": "1.0.0",
+  "description": "A full-featured AI roleplay studio: characters, personas, lorebooks, living world state, memory and context management, powered by Claude.",
+  "type": "module",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node --no-warnings=ExperimentalWarning server/index.js",
+    "dev": "node --no-warnings=ExperimentalWarning --watch server/index.js",
+    "test": "node --no-warnings=ExperimentalWarning --test \"test/**/*.test.js\"",
+    "mock": "MOCK_PORT=3999 node test/mock-anthropic.js",
+    "demo": "ANTHROPIC_BASE_URL=http://127.0.0.1:3999 ANTHROPIC_API_KEY=mock-key node --no-warnings=ExperimentalWarning server/index.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.123.0",
+    "express": "^5.2.1",
+    "zod": "^4.1.0"
+  }
+}
