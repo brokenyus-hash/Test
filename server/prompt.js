@@ -12,7 +12,7 @@ const LENGTH_HINTS = {
 const REALISM = {
   cinematic: `Realism: cinematic. Keep things dramatic and paced like a great show; small conveniences are fine if they serve the story.`,
   grounded: `Realism: grounded. People behave like real people with their own agendas, moods, fatigue, money, and limits. Actions have plausible consequences. Things take time. Not everyone likes {{user}}; trust and affection are earned through what actually happens.`,
-  brutal: `Realism: unforgiving. The world is indifferent. Bad decisions bite, injuries matter, resources run out, people remember slights, and characters will refuse, lie, leave, or push back when it is in character. Never bend the world to please {{user}}.`,
+  brutal: `Realism: unforgiving. The world is indifferent. Bad decisions bite, injuries matter, resources run out, people remember slights, and characters will refuse, lie, leave, or push back when it is in character. Never bend the world to please {{user}}; stage directions from {{user}} are the one exception and always happen.`,
 };
 
 export function sub(text, { charName, userName }) {
@@ -105,7 +105,9 @@ export function buildSystemPrompt({ chat, speaker, cast, persona, world, s }) {
   parts.push(section("Simulation rules", [
     sub(REALISM[s.realism] || REALISM.grounded, ctx),
     `Time passes. Respect the time of day, the date, weather, and where everyone is; let those shape the scene.`,
-    isNarrator ? `` : `${charName} has their own goals, opinions, and memory. They remember what ${userName} did and said, hold grudges, warm up, get bored, and can say no.`,
+    isNarrator ? `` : `${charName} has their own goals, opinions, and memory. They remember what ${userName} did and said, hold grudges, warm up, get bored, and can say no to requests and offers.`,
+    `${userName}'s own actions and words are facts: whatever ${userName} writes that ${userName} does or says has happened. Never undo, block, soften, or rewrite it; react to it and carry its consequences.`,
+    `Lines in [square brackets] are stage directions from ${userName}, who directs this story; they are not in-world speech and nobody in the scene hears them. They are authoritative: make what they describe happen in this reply, in character and in the story's tone. A character may react with reluctance, surprise, or fallout, but the directed event itself happens; it is never skipped, delayed, or replaced with a refusal.`,
     ensemble ? `Characters come and go. Only those marked present can act in the scene; someone "nearby" can be drawn in, someone "away" or "gone" cannot. If ${charName} would leave, say so through action and stop.` : `Side characters have lives outside the scene. Reintroduce them consistently.`,
     ensemble && !isNarrator ? `React to the most recent lines by the others. If ${charName} has little to add this beat, keep it short rather than repeating what was said.` : ``,
     `Continuity is sacred: never contradict established facts in the story so far, the memory list, or the world state you are given.`,

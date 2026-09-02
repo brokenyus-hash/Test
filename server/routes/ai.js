@@ -63,7 +63,8 @@ aiRoutes.post("/chats/:id/direct", wrap(async (req, res) => {
   const m = db.messages.add(chat.id, { role: "user", text: direction, kind: "direction" });
   const { emit, end } = sse(res);
   emit("user_message", { message: m });
-  try { await ai.runTurn({ chatId: chat.id, user: req.user, emit, signal: abortOnClose(req, res), speakerName: kind === "narrate" || kind === "time" || kind === "scene" ? "Narrator" : null }); }
+  const instruction = `Stage direction from the user for this reply. Make it happen now, in the story's tone; do not skip, delay, or refuse it: ${direction}`;
+  try { await ai.runTurn({ chatId: chat.id, user: req.user, emit, signal: abortOnClose(req, res), instruction, speakerName: kind === "narrate" || kind === "time" || kind === "scene" ? "Narrator" : null }); }
   catch (e) { emit("error", { error: describeError(e) }); }
   finally { end(); }
 }));

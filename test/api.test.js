@@ -225,6 +225,10 @@ test("regenerate keeps speaker; continue extends; directions; suggestions; imper
   const ev3 = await alice.sse(`/api/ai/chats/${chatId}/direct`, { kind: "time", detail: "Three hours pass" });
   assert.equal(ev3.find((e) => e[0] === "user_message")[1].message.kind, "direction");
   assert.equal(ev3.find((e) => e[0] === "speaker")[1].name, "Narrator", "time skips are narrated");
+  const dirReq = mock.requests.filter((r) => r.body.stream).at(-1);
+  assert.match(dirReq.body.system[0].text, /square brackets\] are stage directions/, "the prompt explains bracketed directions");
+  assert.match(JSON.stringify(dirReq.body.messages), /\[Time skip: Three hours pass/, "the direction sits in the history as a bracketed line");
+  assert.match(JSON.stringify(dirReq.body.messages), /Stage direction from the user for this reply[^"]*Three hours pass/, "and is repeated as the per-reply instruction");
   const sug = await alice.job(`/api/ai/chats/${chatId}/suggest`);
   assert.ok(sug.suggestions.length >= 3);
   const imp = await alice.job(`/api/ai/chats/${chatId}/impersonate`, { hint: "be bold" });
