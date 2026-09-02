@@ -77,7 +77,7 @@ All of it is fed back into the prompt, so the character never forgets that you o
 
 The app needs a small Node server (it keeps your chats in SQLite and talks to the AI provider on your behalf), so it can't run as a static page. Any host that runs Docker or Node works; the repo ships ready-made configs:
 
-**Render (easiest, one click):** the repo contains `render.yaml`. In the Render dashboard choose *New → Blueprint*, pick this repo, and fill in `XAI_API_KEY` and/or `ANTHROPIC_API_KEY` plus an `APP_PASSWORD`. Render builds it, attaches a 1 GB persistent disk for the database and gives you a public URL.
+**Render (free, one tap):** open <https://render.com/deploy?repo=https://github.com/brokenyus-hash/Test>, sign in, fill in `XAI_API_KEY` and/or `ANTHROPIC_API_KEY` plus an `APP_PASSWORD`, and Render builds it from `render.yaml` and gives you a public URL. The free plan sleeps after 15 minutes idle (first request then takes ~1 minute) and has no persistent disk, so chats reset when it restarts. For a permanent setup switch `plan` to `starter` and add a `disk` (mount `/var/data`, set `DATA_DIR=/var/data`).
 
 **Your own server with Kubernetes (k3s, microk8s, kubeadm), e.g. a Hetzner box:** one command, run on the server as root. It needs no registry and no image build: an init container clones this repo and installs packages onto `/var/lib/tavern/app`, and `node:22-alpine` runs it. Chats persist in `/var/lib/tavern/data`.
 

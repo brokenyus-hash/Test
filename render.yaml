@@ -1,23 +1,18 @@
 # Render blueprint: https://render.com/docs/blueprint-spec
-# 1. Push this repo to GitHub  2. Render dashboard -> New -> Blueprint -> pick the repo
-# 3. Fill in the secret env vars when prompted. The persistent disk keeps your chats.
+# One-tap deploy: https://render.com/deploy?repo=https://github.com/brokenyus-hash/Test
+# Free plan = no persistent disk: chats reset when the instance restarts (fine for testing).
+# For a permanent setup change plan to "starter" and add a disk (see README).
 services:
   - type: web
     name: tavern-ai-roleplay
     runtime: node
-    plan: starter
+    plan: free
     buildCommand: npm ci
     startCommand: npm start
-    healthCheckPath: /api/stats
-    disk:
-      name: tavern-data
-      mountPath: /var/data
-      sizeGB: 1
+    healthCheckPath: /healthz
     envVars:
       - key: NODE_VERSION
         value: "22"
-      - key: DATA_DIR
-        value: /var/data
       - key: XAI_API_KEY
         sync: false
       - key: ANTHROPIC_API_KEY
