@@ -3,8 +3,11 @@ import Anthropic from "@anthropic-ai/sdk";
 import { getSetting } from "./db.js";
 
 export const DEFAULTS = {
+  provider: "anthropic",     // anthropic | xai
   model: "claude-opus-5",
   utilityModel: "claude-opus-5",
+  xaiModel: "grok-4.6",
+  xaiUtilityModel: "grok-4.3",
   effort: "medium",          // reply effort: low | medium | high | xhigh | max
   utilityEffort: "low",      // state extraction, summaries, suggestions
   fallbacks: true,           // server-side refusal fallbacks (beta)
@@ -36,6 +39,14 @@ export function settings() {
     const v = getSetting(k);
     if (v !== null && v !== undefined && v !== "") s[k] = v;
   }
+  return resolveModels(s);
+}
+
+/** Fill activeModel / activeUtilityModel from the selected provider (chat overrides may replace activeModel). */
+export function resolveModels(s) {
+  const xai = s.provider === "xai";
+  s.activeModel = xai ? s.xaiModel : s.model;
+  s.activeUtilityModel = xai ? s.xaiUtilityModel : s.utilityModel;
   return s;
 }
 
@@ -84,7 +95,7 @@ export function fallbackParams(model, enabled) {
 export async function structured({ schema, system, messages, model, effort, maxTokens = 8000 }) {
   const { zodOutputFormat } = await import("@anthropic-ai/sdk/helpers/zod");
   const s = settings();
-  const m = model || s.utilityModel;
+  const m = model || s.activeUtilityModel;
   const c = client();
   const res = await c.messages.parse({
     model: m,
@@ -105,7 +116,7 @@ export async function structured({ schema, system, messages, model, effort, maxT
 /** Plain text call (non-streaming). */
 export async function complete({ system, messages, model, effort, maxTokens = 4000 }) {
   const s = settings();
-  const m = model || s.utilityModel;
+  const m = model || s.activeUtilityModel;
   const c = client();
   const res = await c.messages.create({
     model: m,
@@ -116,6 +127,41 @@ export async function complete({ system, messages, model, effort, maxTokens = 40
   });
   if (res.stop_reason === "refusal") throw new Error(`Model refused: ${res.stop_details?.explanation || "declined"}`);
   return { text: res.content.filter((b) => b.type === "text").map((b) => b.text).join(""), usage: res.usage };
+}
+
+/**
+ * Stream a reply through the Messages API. Returns { text, thinking, usage, stopReason, note }.
+ * Uses the beta endpoint with server-side refusal fallbacks when enabled and supported.
+ */
+export async function streamText({ model, system, messages, maxTokens, effort, showThinking, fallbacks, signal, onDelta, onThinking }) {
+  const c = client();
+  const fb = fallbackParams(model, fallbacks);
+  const params = {
+    model, max_tokens: maxTokens, system, messages,
+    ...reasoningParams(model, effort, showThinking), ...(fb || {}),
+  };
+  let text = "", thinking = "";
+  const stream = fb ? c.beta.messages.stream(params, { signal }) : c.messages.stream(params, { signal });
+  try {
+    for await (const ev of stream) {
+      if (ev.type === "content_block_delta") {
+        if (ev.delta.type === "text_delta") { text += ev.delta.text; onDelta?.(ev.delta.text); }
+        else if (ev.delta.type === "thinking_delta" && ev.delta.thinking) { thinking += ev.delta.thinking; onThinking?.(ev.delta.thinking); }
+      }
+    }
+  } catch (e) {
+    if (!signal?.aborted) throw e;
+  }
+  let final = null;
+  try { final = await stream.finalMessage(); } catch (e) { if (!signal?.aborted) throw e; }
+  const usage = final?.usage ? {
+    input: final.usage.input_tokens, output: final.usage.output_tokens,
+    cache_read: final.usage.cache_read_input_tokens, cache_write: final.usage.cache_creation_input_tokens,
+    model: final.model,
+  } : null;
+  const stopReason = final?.stop_reason || (signal?.aborted ? "aborted" : "end_turn");
+  const note = stopReason === "refusal" ? (final?.stop_details?.explanation || "The model declined to continue this scene.") : null;
+  return { text, thinking, usage, stopReason, note };
 }
 
 export function describeError(err) {

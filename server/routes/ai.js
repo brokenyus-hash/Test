@@ -1,15 +1,17 @@
 // AI endpoints: SSE streaming replies + generation helpers.
 import { Router } from "express";
 import * as db from "../db.js";
-import { hasCredentials, describeError } from "../claude.js";
+import { hasCredentials, describeError } from "../provider.js";
+import { settings } from "../claude.js";
 import * as ai from "../ai.js";
 
 export const aiRoutes = Router();
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
 const needKey = (res) => {
-  if (hasCredentials()) return false;
-  res.status(400).json({ error: "No API key configured. Open Settings and add your Anthropic API key." });
+  const s = settings();
+  if (hasCredentials(s.provider)) return false;
+  res.status(400).json({ error: `No API key configured for ${s.provider === "xai" ? "xAI (Grok)" : "Anthropic (Claude)"}. Open Settings and add one.` });
   return true;
 };
 

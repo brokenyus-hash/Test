@@ -2,7 +2,8 @@
 // summaries, character/world generation, action suggestions, impersonation.
 import { z } from "zod";
 import * as db from "./db.js";
-import { client, settings, structured, complete, reasoningParams, fallbackParams, estimateTokens, describeError } from "./claude.js";
+import { settings, resolveModels, estimateTokens } from "./claude.js";
+import { streamText, structured as providerStructured, complete as providerComplete, describeError } from "./provider.js";
 import { buildMessages, pickForSummary, formatState, sub } from "./prompt.js";
 
 const text = (m) => m.alternatives?.[m.active ?? 0] ?? "";
@@ -13,10 +14,15 @@ export function loadChatContext(chatId) {
   const character = chat.character_id ? db.characters.get(chat.character_id) : null;
   const persona = chat.persona_id ? db.personas.get(chat.persona_id) : null;
   const world = chat.world_id ? db.worlds.get(chat.world_id) : (character?.world_id ? db.worlds.get(character.world_id) : null);
-  const s = { ...settings(), ...(chat.settings || {}) };
+  const s = resolveModels({ ...settings(), ...(chat.settings || {}) });
+  if (chat.settings?.model) s.activeModel = chat.settings.model; // per-chat override
   const history = db.messages.list(chatId);
   return { chat, character, persona, world, s, history };
 }
+
+// Provider-aware helpers: utility calls use the utility model unless a model is given.
+const structured = (p) => { const s = settings(); return providerStructured({ provider: s.provider, model: s.activeUtilityModel, effort: s.utilityEffort, maxTokens: 8000, ...p }); };
+const complete = (p) => { const s = settings(); return providerComplete({ provider: s.provider, model: s.activeUtilityModel, effort: s.utilityEffort, maxTokens: 4000, ...p }); };
 
 // ---------------------------------------------------------------- summaries
 export async function maybeSummarize(ctx, emit) {
@@ -138,51 +144,24 @@ export async function streamReply({ chatId, emit, signal, mode = "reply", target
     history = [...history, { seq: 1e9, role: "user", alternatives: ["(Continue.)"], active: 0 }];
   }
 
-  const model = s.model;
-  const built = buildMessages({ chat, character, persona, world, s, history, extraInstruction: extra, model });
+  const model = s.activeModel;
+  const built = buildMessages({ chat, character, persona, world, s, history, extraInstruction: extra, model, provider: s.provider });
   emit("status", { text: "Writing…", stats: built.stats });
 
-  const c = client();
-  const fb = fallbackParams(model, s.fallbacks);
-  const params = {
-    model,
-    max_tokens: Number(s.maxTokens) || 4096,
-    system: built.system,
-    messages: built.messages,
-    ...reasoningParams(model, s.effort, s.showThinking),
-    ...(fb || {}),
-  };
-
-  let out = "";
-  let thinking = "";
-  const stream = fb ? c.beta.messages.stream(params, { signal }) : c.messages.stream(params, { signal });
-  try {
-    for await (const ev of stream) {
-      if (ev.type === "content_block_delta") {
-        if (ev.delta.type === "text_delta") { out += ev.delta.text; emit("delta", { text: ev.delta.text }); }
-        else if (ev.delta.type === "thinking_delta" && ev.delta.thinking) { thinking += ev.delta.thinking; emit("thinking", { text: ev.delta.thinking }); }
-      }
-    }
-  } catch (e) {
-    if (signal?.aborted) {
-      // Keep partial output.
-    } else throw e;
+  const r = await streamText({
+    provider: s.provider, model, system: built.system, messages: built.messages,
+    maxTokens: Number(s.maxTokens) || 4096, effort: s.effort, showThinking: s.showThinking, fallbacks: s.fallbacks, signal,
+    onDelta: (t) => emit("delta", { text: t }),
+    onThinking: (t) => emit("thinking", { text: t }),
+  });
+  let out = r.text.trim();
+  const thinking = r.thinking;
+  const usage = r.usage;
+  if (r.stopReason === "refusal") {
+    if (!out) throw new Error(`Refused: ${r.note}`);
+    emit("status", { text: `Note: the model stopped early (${r.note}).` });
   }
-  let final = null;
-  try { final = await stream.finalMessage(); } catch (e) { if (!signal?.aborted) throw e; }
-  if (final?.stop_reason === "refusal") {
-    const why = final.stop_details?.explanation || "The model declined to continue this scene.";
-    if (!out.trim()) throw new Error(`Refused: ${why}`);
-    emit("status", { text: `Note: the model stopped early (${why}).` });
-  }
-  out = out.trim();
   if (!out) throw new Error("Empty reply from the model.");
-
-  const usage = final?.usage ? {
-    input: final.usage.input_tokens, output: final.usage.output_tokens,
-    cache_read: final.usage.cache_read_input_tokens, cache_write: final.usage.cache_creation_input_tokens,
-    model: final.model,
-  } : null;
 
   // Persist.
   let saved;

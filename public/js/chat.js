@@ -72,7 +72,7 @@ class ChatView {
     const len = select([...inherit(g.replyLength), "short", "medium", "long", "epic"], s.replyLength || "");
     const realism = select([...inherit(g.realism), "cinematic", "grounded", "brutal"], s.realism || "");
     const effort = select([...inherit(g.effort), "low", "medium", "high", "xhigh", "max"], s.effort || "");
-    const model = select([...inherit(g.model), ...(state.settings?.models || [])], s.model || "");
+    const model = select([...inherit(g.activeModel || g.model), ...(state.settings?.models || [])], s.model || "");
     const director = textarea(c.director_note || "", { rows: 3, placeholder: "Standing direction the AI always follows in this chat, e.g. 'Keep the tone noir; the city should feel hostile at night.'" });
     const scenario = textarea(c.scenario || "", { rows: 3, placeholder: "Scenario override for this chat" });
     const m = modal({ title: "Chat settings", body: [

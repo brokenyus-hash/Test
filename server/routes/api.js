@@ -1,32 +1,43 @@
 // REST API: settings, characters, personas, worlds, chats, messages, timeline, search, import/export.
 import { Router } from "express";
 import * as db from "../db.js";
-import { DEFAULTS, MODELS, settings, hasCredentials } from "../claude.js";
+import { DEFAULTS, settings } from "../claude.js";
+import { PROVIDERS, modelsFor, liveModels, hasCredentials } from "../provider.js";
 
 export const api = Router();
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 const notFound = (res) => res.status(404).json({ error: "Not found" });
 
 // ---------- settings ----------
+const mask = (k) => (k ? k.slice(0, 10) + "…" + k.slice(-4) : "");
 api.get("/settings", (req, res) => {
   const s = settings();
   const key = db.getSetting("apiKey");
+  const xaiKey = db.getSetting("xaiKey");
   res.json({
     settings: s,
     defaults: DEFAULTS,
-    models: MODELS,
-    hasApiKey: hasCredentials(),
-    apiKeyMasked: key ? key.slice(0, 10) + "…" + key.slice(-4) : (process.env.ANTHROPIC_API_KEY ? "(from environment)" : ""),
+    providers: PROVIDERS,
+    models: modelsFor(s.provider),
+    modelsByProvider: { anthropic: modelsFor("anthropic"), xai: modelsFor("xai") },
+    hasApiKey: hasCredentials(s.provider),
+    credentials: { anthropic: hasCredentials("anthropic"), xai: hasCredentials("xai") },
+    apiKeyMasked: key ? mask(key) : (process.env.ANTHROPIC_API_KEY ? "(from environment)" : ""),
+    xaiKeyMasked: xaiKey ? mask(xaiKey) : (process.env.XAI_API_KEY ? "(from environment)" : ""),
   });
 });
 api.put("/settings", (req, res) => {
   const body = req.body || {};
   for (const [k, v] of Object.entries(body)) {
-    if (k === "apiKey") { if (v === null || v === "") db.db.prepare("DELETE FROM settings WHERE key='apiKey'").run(); else db.setSetting("apiKey", String(v).trim()); }
-    else if (k in DEFAULTS) db.setSetting(k, v);
+    if (k === "apiKey" || k === "xaiKey" || k === "xaiBaseUrl") {
+      if (v === null || v === "") db.db.prepare("DELETE FROM settings WHERE key=?").run(k);
+      else db.setSetting(k, String(v).trim());
+    } else if (k in DEFAULTS) db.setSetting(k, v);
   }
-  res.json({ ok: true, settings: settings(), hasApiKey: hasCredentials() });
+  const s = settings();
+  res.json({ ok: true, settings: s, hasApiKey: hasCredentials(s.provider) });
 });
+api.get("/providers/:id/models", wrap(async (req, res) => res.json(await liveModels(req.params.id))));
 
 // ---------- generic CRUD ----------
 function crud(path, store, { onDelete } = {}) {

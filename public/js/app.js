@@ -159,7 +159,7 @@ function renderHome() {
         h("button", { class: "btn primary", onClick: () => startChatDialog() }, "▶ Start a roleplay"),
         h("button", { class: "btn", onClick: () => navigate("character", { id: "new" }) }, "✨ Create a character"),
         h("button", { class: "btn", onClick: () => navigate("world", { id: "new" }) }, "🗺️ Build a world"),
-        !s?.hasApiKey ? h("button", { class: "btn", style: { borderColor: "var(--warn)", color: "var(--warn)" }, onClick: () => navigate("settings") }, "⚠ Add your API key") : null,
+        !s?.hasApiKey ? h("button", { class: "btn", style: { borderColor: "var(--warn)", color: "var(--warn)" }, onClick: () => navigate("settings") }, "⚠ Add an API key (Claude or Grok)") : null,
       ),
     ),
   );
@@ -297,28 +297,67 @@ async function renderSettings() {
 
   const keyInput = input("", { placeholder: cfg.apiKeyMasked ? `Saved: ${cfg.apiKeyMasked}` : "sk-ant-…", type: "password" });
   keyInput.addEventListener("change", () => { patch.apiKey = keyInput.value; });
+  const xaiKeyInput = input("", { placeholder: cfg.xaiKeyMasked ? `Saved: ${cfg.xaiKeyMasked}` : "xai-…", type: "password" });
+  xaiKeyInput.addEventListener("change", () => { patch.xaiKey = xaiKeyInput.value; });
+
+  const providerSel = bind("provider", select(cfg.providers, s.provider));
+  const anthropicBox = h("div");
+  const xaiBox = h("div");
+  const modelBox = h("div");
+  const drawProvider = async () => {
+    const prov = providerSel.value;
+    anthropicBox.style.display = prov === "anthropic" ? "" : "none";
+    xaiBox.style.display = prov === "xai" ? "" : "none";
+    modelBox.innerHTML = "";
+    if (prov === "xai") {
+      let models = cfg.modelsByProvider.xai;
+      modelBox.append(h("div", { class: "muted small" }, h("span", { class: "spinner" }), " Loading Grok models…"));
+      try { models = await api.get("/api/providers/xai/models"); } catch { /* fallback list */ }
+      modelBox.innerHTML = "";
+      const pick = (v) => (models.some((m) => m.id === v) ? v : models[0]?.id);
+      modelBox.append(
+        field("Roleplay model", bind("xaiModel", select(models, pick(s.xaiModel)))),
+        field("Utility model", bind("xaiUtilityModel", select(models, pick(s.xaiUtilityModel))), { hint: "state tracking, summaries, suggestions" }),
+      );
+      if (!models.some((m) => m.id === s.xaiModel)) patch.xaiModel = pick(s.xaiModel);
+      if (!models.some((m) => m.id === s.xaiUtilityModel)) patch.xaiUtilityModel = pick(s.xaiUtilityModel);
+    } else {
+      modelBox.append(
+        field("Roleplay model", bind("model", select(cfg.modelsByProvider.anthropic, s.model))),
+        field("Utility model", bind("utilityModel", select(cfg.modelsByProvider.anthropic, s.utilityModel)), { hint: "state tracking, summaries, suggestions" }),
+      );
+    }
+  };
+  providerSel.addEventListener("change", drawProvider);
+  anthropicBox.append(
+    field("Anthropic API key", keyInput, { hint: cfg.credentials.anthropic ? "configured ✓" : "required" }),
+    h("div", { class: "muted small" }, "Stored locally in the app database, or set ANTHROPIC_API_KEY in the environment. Get a key at console.anthropic.com."),
+    cfg.apiKeyMasked && !cfg.apiKeyMasked.startsWith("(") ? h("div", { class: "row", style: { marginTop: "10px" } }, h("button", { class: "btn sm danger ghost", onClick: async () => { await api.put("/api/settings", { apiKey: "" }); toast("Key removed"); route(); } }, "Remove saved key")) : null,
+  );
+  xaiBox.append(
+    field("xAI API key", xaiKeyInput, { hint: cfg.credentials.xai ? "configured ✓" : "required" }),
+    h("div", { class: "muted small" }, "Stored locally in the app database, or set XAI_API_KEY in the environment. Get a key at console.x.ai."),
+    cfg.xaiKeyMasked && !cfg.xaiKeyMasked.startsWith("(") ? h("div", { class: "row", style: { marginTop: "10px" } }, h("button", { class: "btn sm danger ghost", onClick: async () => { await api.put("/api/settings", { xaiKey: "" }); toast("Key removed"); route(); } }, "Remove saved key")) : null,
+  );
+  drawProvider();
 
   page.append(
-    h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Settings"), h("p", {}, "Model, writing style, and how much the app remembers."))),
+    h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Settings"), h("p", {}, "Provider, model, writing style, and how much the app remembers."))),
     h("div", { class: "settings-grid" },
       h("div", { class: "card" },
-        h("div", { class: "section-title" }, "Connection"),
-        field("Anthropic API key", keyInput, { hint: cfg.hasApiKey ? "configured ✓" : "required" }),
-        h("div", { class: "muted small" }, "Stored locally in the app database. You can also set ANTHROPIC_API_KEY in the environment instead. Get a key at console.anthropic.com."),
-        h("div", { class: "row", style: { marginTop: "10px" } },
-          cfg.apiKeyMasked && !cfg.apiKeyMasked.startsWith("(") ? h("button", { class: "btn sm danger ghost", onClick: async () => { await api.put("/api/settings", { apiKey: "" }); toast("Key removed"); route(); } }, "Remove saved key") : null,
-        ),
+        h("div", { class: "section-title" }, "Provider"),
+        field("AI provider", providerSel),
+        anthropicBox, xaiBox,
       ),
       h("div", { class: "card" },
         h("div", { class: "section-title" }, "Model"),
-        field("Roleplay model", bind("model", select(cfg.models, s.model))),
+        modelBox,
         field("Reasoning effort", bind("effort", select(["low", "medium", "high", "xhigh", "max"], s.effort)), { hint: "higher = deeper, slower" }),
-        field("Utility model", bind("utilityModel", select(cfg.models, s.utilityModel)), { hint: "state tracking, summaries, suggestions" }),
         field("Utility effort", bind("utilityEffort", select(["low", "medium", "high"], s.utilityEffort))),
         field("Max tokens per reply", bind("maxTokens", input(s.maxTokens, { type: "number", min: 256, max: 32000 }), num)),
-        toggle("Refusal fallbacks (re-run on a fallback model if the primary declines)", s.fallbacks, (v) => { patch.fallbacks = v; }),
+        toggle("Refusal fallbacks (Claude only: re-run on a fallback model if the primary declines)", s.fallbacks, (v) => { patch.fallbacks = v; }),
         h("div", { style: { height: "8px" } }),
-        toggle("Show the model's thinking summary while it writes", s.showThinking, (v) => { patch.showThinking = v; }),
+        toggle("Show the model's reasoning while it writes", s.showThinking, (v) => { patch.showThinking = v; }),
       ),
       h("div", { class: "card" },
         h("div", { class: "section-title" }, "Writing style"),
@@ -356,7 +395,7 @@ window.addEventListener("hashchange", route);
       await loadLists();
     }
     await route();
-    if (!state.settings.hasApiKey) toast("Add your Anthropic API key in Settings to start chatting.", "");
+    if (!state.settings.hasApiKey) toast("Add an API key in Settings (Claude or Grok) to start chatting.", "");
   } catch (e) {
     main.append(h("div", { class: "page" }, h("div", { class: "empty" }, "Failed to load: " + e.message)));
   }

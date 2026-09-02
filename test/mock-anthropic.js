@@ -36,6 +36,38 @@ export function instanceFromSchema(schema, hint = "", root = schema) {
   }
 }
 
+/** OpenAI-style chat completions (used by the xAI provider). */
+function openaiCompat(req, res, json) {
+  if (!req.headers.authorization) {
+    res.writeHead(401, { "content-type": "application/json" });
+    return res.end(JSON.stringify({ error: { message: "missing bearer token" } }));
+  }
+  let text = REPLY;
+  const rf = json.response_format;
+  if (rf?.type === "json_schema") text = JSON.stringify(instanceFromSchema(rf.json_schema.schema));
+  const usage = { prompt_tokens: 150, completion_tokens: 40, total_tokens: 190, prompt_tokens_details: { cached_tokens: 100 } };
+  if (json.stream) {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    const send = (d) => res.write(`data: ${JSON.stringify(d)}\n\n`);
+    send({ id: "c1", object: "chat.completion.chunk", model: json.model, choices: [{ index: 0, delta: { role: "assistant", reasoning_content: "thinking about it" } }] });
+    const chunks = text.match(/[\s\S]{1,12}/g) || [];
+    let i = 0;
+    const tick = () => {
+      if (i < chunks.length) { send({ id: "c1", object: "chat.completion.chunk", model: json.model, choices: [{ index: 0, delta: { content: chunks[i++] } }] }); setTimeout(tick, 2); }
+      else {
+        send({ id: "c1", object: "chat.completion.chunk", model: json.model, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] });
+        send({ id: "c1", object: "chat.completion.chunk", model: json.model, choices: [], usage });
+        res.write("data: [DONE]\n\n");
+        res.end();
+      }
+    };
+    tick();
+  } else {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ id: "c1", object: "chat.completion", model: json.model, choices: [{ index: 0, message: { role: "assistant", content: text }, finish_reason: "stop" }], usage }));
+  }
+}
+
 const REPLY = `*The mock character considers you for a long moment, rain ticking against the window.*\n\n"So you came after all," she says. "What do you want from me?"`;
 
 export function startMock({ port = 0, reply = REPLY, delayMs = 2 } = {}) {
@@ -46,6 +78,11 @@ export function startMock({ port = 0, reply = REPLY, delayMs = 2 } = {}) {
     req.on("end", () => {
       const json = body ? JSON.parse(body) : {};
       requests.push({ url: req.url, headers: req.headers, body: json });
+      if (req.url.startsWith("/v1/models")) {
+        res.writeHead(200, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ data: [{ id: "grok-4.6" }, { id: "grok-4.3" }, { id: "grok-imagine-image" }] }));
+      }
+      if (req.url.startsWith("/v1/chat/completions")) return openaiCompat(req, res, json, requests);
       if (!req.url.startsWith("/v1/messages")) { res.writeHead(404); return res.end("{}"); }
       if (!req.headers["x-api-key"] && !req.headers.authorization) {
         res.writeHead(401, { "content-type": "application/json" });

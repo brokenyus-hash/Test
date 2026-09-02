@@ -1,0 +1,26 @@
+# Render blueprint: https://render.com/docs/blueprint-spec
+# 1. Push this repo to GitHub  2. Render dashboard -> New -> Blueprint -> pick the repo
+# 3. Fill in the secret env vars when prompted. The persistent disk keeps your chats.
+services:
+  - type: web
+    name: tavern-ai-roleplay
+    runtime: node
+    plan: starter
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /api/stats
+    disk:
+      name: tavern-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATA_DIR
+        value: /var/data
+      - key: XAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: APP_PASSWORD
+        sync: false

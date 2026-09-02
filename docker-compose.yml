@@ -1,0 +1,16 @@
+services:
+  tavern:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      # Pick one provider (or set both and switch in Settings):
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - XAI_API_KEY=${XAI_API_KEY:-}
+      # Protect the app when it is reachable from the internet:
+      - APP_PASSWORD=${APP_PASSWORD:-}
+    volumes:
+      - tavern-data:/app/data
+    restart: unless-stopped
+volumes:
+  tavern-data:

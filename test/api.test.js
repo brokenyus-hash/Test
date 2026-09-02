@@ -204,6 +204,43 @@ test("branch, edit, delete cascade, export, search", async () => {
   assert.equal(reset.state, null);
 });
 
+test("xAI (Grok) provider: streaming, reasoning, structured state, live model list", async () => {
+  await put("/api/settings", { provider: "xai", xaiKey: "xai-test-key", xaiBaseUrl: mock.url + "/v1", showThinking: true, effort: "low" });
+  const cfg = await get("/api/settings");
+  assert.equal(cfg.settings.activeModel, "grok-4.6");
+  assert.equal(cfg.hasApiKey, true);
+  assert.match(cfg.xaiKeyMasked, /^xai-test-k…-key$/);
+  const models = await get("/api/providers/xai/models");
+  assert.deepEqual(models.map((m) => m.id), ["grok-4.6", "grok-4.3"], "imagine models filtered out");
+
+  const before = mock.requests.length;
+  const chat = await post("/api/chats", { character_id: charId, persona_id: personaId });
+  const ev = await sse(`/api/ai/chats/${chat.id}/reply`, { text: "\"Do the salt priests still trade in memories?\"" });
+  const names = ev.map((e) => e[0]);
+  assert.ok(names.includes("thinking"), "reasoning streamed");
+  assert.ok(names.includes("delta") && names.includes("done") && names.includes("state"));
+  const done = ev.find((e) => e[0] === "done")[1];
+  assert.equal(done.usage.model, "grok-4.6");
+  assert.equal(done.usage.cache_read, 100);
+  assert.match(done.message.thinking, /thinking about it/);
+  const reqs = mock.requests.slice(before).filter((r) => r.url.startsWith("/v1/chat/completions"));
+  const replyReq = reqs.find((r) => r.body.stream);
+  assert.equal(replyReq.headers.authorization, "Bearer xai-test-key");
+  assert.equal(replyReq.body.reasoning_effort, "low");
+  assert.equal(replyReq.body.messages[0].role, "system");
+  assert.match(replyReq.body.messages[0].content, /You are Mira/);
+  assert.equal(replyReq.body.messages.at(-1).role, "system", "dynamic context as trailing system message");
+  assert.match(replyReq.body.messages.at(-1).content, /They trade in memories/);
+  const stateReq = reqs.find((r) => r.body.response_format);
+  assert.equal(stateReq.body.model, "grok-4.3", "utility model used for state extraction");
+  assert.equal(stateReq.body.response_format.json_schema.strict, true);
+  assert.equal(stateReq.body.response_format.json_schema.schema.additionalProperties, false);
+  const gen = await post("/api/ai/generate/character", { prompt: "a grok-made rogue" });
+  assert.ok(gen.name && gen.likes.length >= 3);
+  await del(`/api/chats/${chat.id}`);
+  await put("/api/settings", { provider: "anthropic", xaiKey: "", showThinking: false });
+});
+
 test("missing api key gives a clear error", async () => {
   await put("/api/settings", { apiKey: "" });
   const r = await fetch(`${base}/api/ai/chats/${chatId}/reply`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "hi" }) });

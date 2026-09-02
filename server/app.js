@@ -10,6 +10,21 @@ export const app = express();
 app.disable("x-powered-by");
 app.use(express.json({ limit: "20mb" }));
 
+// Optional protection for internet-facing deployments: set APP_PASSWORD (and optionally APP_USER).
+if (process.env.APP_PASSWORD) {
+  const user = process.env.APP_USER || "tavern";
+  app.use((req, res, next) => {
+    const hdr = req.headers.authorization || "";
+    const [scheme, b64] = hdr.split(" ");
+    if (scheme === "Basic" && b64) {
+      const [u, ...rest] = Buffer.from(b64, "base64").toString().split(":");
+      if (u === user && rest.join(":") === process.env.APP_PASSWORD) return next();
+    }
+    res.setHeader("WWW-Authenticate", 'Basic realm="Tavern"');
+    res.status(401).send("Authentication required");
+  });
+}
+
 app.use("/api/ai", aiRoutes);
 app.use("/api", api);
 

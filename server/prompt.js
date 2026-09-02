@@ -155,7 +155,7 @@ export function formatState(state) {
  * Assemble the messages array for a reply.
  * @returns {{system: any[], messages: any[], dynamicContext: string, history: any[], stats: object}}
  */
-export function buildMessages({ chat, character, persona, world, s, history, extraInstruction, model }) {
+export function buildMessages({ chat, character, persona, world, s, history, extraInstruction, model, provider = "anthropic" }) {
   const charName = character?.name || "Narrator";
   const userName = persona?.name || "the user";
   const ctx = { charName, userName };
@@ -208,7 +208,7 @@ export function buildMessages({ chat, character, persona, world, s, history, ext
 
   const messages = [...merged];
   if (dynamicContext) {
-    if (supportsMidSystem(model)) {
+    if (provider === "xai" || supportsMidSystem(model)) {
       messages.push({ role: "system", content: dynamicContext });
     } else {
       // Fallback: append as a text block on the last user turn (after the cache breakpoint).

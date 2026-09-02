@@ -1,6 +1,6 @@
 # 🎭 Tavern — AI Roleplay Studio
 
-A self-hosted roleplay app that treats a story like a living world. Create characters with real personalities, build worlds with keyword-triggered lore, and play with an AI (Claude) that **remembers everything**: time of day, where you are, who's in the room, how people feel about you, what you're carrying, and which plot threads are still open.
+A self-hosted roleplay app that treats a story like a living world. Create characters with real personalities, build worlds with keyword-triggered lore, and play with an AI (Claude or Grok) that **remembers everything**: time of day, where you are, who's in the room, how people feel about you, what you're carrying, and which plot threads are still open.
 
 No build step, no external database. Node 22, Express, the official Anthropic SDK and Node's built-in SQLite.
 
@@ -8,9 +8,10 @@ No build step, no external database. Node 22, Express, the official Anthropic SD
 
 ```bash
 npm install
-cp .env.example .env        # optional: put ANTHROPIC_API_KEY here, or paste it in Settings inside the app
 npm start                   # http://localhost:3000
 ```
+
+Then open **Settings**, pick a provider (**Anthropic / Claude** or **xAI / Grok**) and paste the matching API key. Keys can also come from the environment: `ANTHROPIC_API_KEY` or `XAI_API_KEY` (see `.env.example`).
 
 Try it without an API key (canned responses from a local mock of the Messages API):
 
@@ -67,8 +68,29 @@ All of it is fed back into the prompt, so the character never forgets that you o
 4. **Dynamic context** – summary, long-term memory, current world state, triggered lore, director's note and any one-off steering instruction are appended *after* the cached prefix as a mid-conversation `system` message (or a tagged text block on models that don't support it), so per-turn changes never invalidate the cache.
 5. Budgets and estimates are shown live under the composer (system / history / summarized / lore triggered).
 
-### Model settings
-Model (Opus 5 by default; Fable 5.1, Sonnet 5, Opus 4.8, Haiku 4.5), effort level, a separate cheaper utility model/effort for state tracking and summaries, max tokens, server-side refusal fallbacks, thinking display, reply length, realism (cinematic / grounded / brutal), point of view and tense.
+### Providers & model settings
+- **Anthropic (Claude)** – Opus 5 by default; Fable 5.1, Sonnet 5, Opus 4.8, Haiku 4.5. Adaptive thinking, prompt caching, server-side refusal fallbacks, structured outputs.
+- **xAI (Grok)** – Grok 4.6 by default; the model list is fetched live from your account. Uses the OpenAI-compatible chat API with streamed reasoning, strict JSON-schema structured outputs and `reasoning_effort`.
+- Effort level, a separate cheaper utility model/effort for state tracking and summaries, max tokens, thinking display, reply length, realism (cinematic / grounded / brutal), point of view and tense.
+
+## Putting it online
+
+The app needs a small Node server (it keeps your chats in SQLite and talks to the AI provider on your behalf), so it can't run as a static page. Any host that runs Docker or Node works; the repo ships ready-made configs:
+
+**Render (easiest, one click):** the repo contains `render.yaml`. In the Render dashboard choose *New → Blueprint*, pick this repo, and fill in `XAI_API_KEY` and/or `ANTHROPIC_API_KEY` plus an `APP_PASSWORD`. Render builds it, attaches a 1 GB persistent disk for the database and gives you a public URL.
+
+**Railway / Fly.io / any Docker host:**
+
+```bash
+docker build -t tavern .
+docker run -p 3000:3000 -e XAI_API_KEY=xai-... -e APP_PASSWORD=choose-one -v tavern-data:/app/data tavern
+```
+
+or `docker compose up` (reads keys from `.env`).
+
+**Protect it.** Set `APP_PASSWORD` (and optionally `APP_USER`, default `tavern`) whenever the app is reachable from the internet. The browser will ask for the password once; without it anyone with the URL could spend your API credits and read your stories.
+
+**Environment variables:** `PORT`, `DATA_DIR`, `ANTHROPIC_API_KEY`, `XAI_API_KEY`, `XAI_BASE_URL`, `APP_PASSWORD`, `APP_USER`, `ANTHROPIC_BASE_URL`.
 
 ## Layout
 
@@ -84,4 +106,4 @@ test/           mock Anthropic API + end-to-end test-suite
 data/           tavern.sqlite (created on first run; git-ignored)
 ```
 
-Set `PORT`, `DATA_DIR`, `ANTHROPIC_API_KEY` or `ANTHROPIC_BASE_URL` in the environment as needed.
+`server/providers/xai.js` holds the Grok client; `server/provider.js` dispatches between providers.
